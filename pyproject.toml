@@ -17,6 +17,9 @@ dependencies = [
     "openai>=1.54",
     "qdrant-client>=1.12",
     "neo4j>=5.26",
+    # Day 3: the agent state machine + tracing.
+    "langgraph>=0.2.45",
+    "langsmith>=0.1.140",
 ]
 
 [dependency-groups]
@@ -29,3 +32,6 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "llm: hits the OpenAI API (costs money). Skip with: -m 'not llm'",
+]

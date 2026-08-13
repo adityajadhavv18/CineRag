@@ -49,6 +49,17 @@ uv run python -m scripts.compare
 Puts a vibe query and a fact query to *both* stores. Two answers are good, two
 are bad — and why they're bad is the argument for the architecture.
 
+## Talking to the agent (Day 3+)
+
+```bash
+uv run python -m scripts.chat                    # interactive
+uv run python -m scripts.chat "who directed Heat"
+uv run python -m scripts.chat --demo             # routing suite
+uv run python -m scripts.chat --draw             # graph structure
+```
+
+Tracing turns on when `LANGSMITH_API_KEY` is set **and** `LANGCHAIN_TRACING_V2=true`.
+
 ## Tests
 
 ```bash

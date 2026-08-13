@@ -377,6 +377,12 @@ cinerag/
 - **The embed-text template is frozen** (§3.2). Changing it means re-embedding every point; treat it
   as a versioned decision, not a tweak.
 - **Intent decides the lead engine.** Do not blindly fire both retrievers on every query.
+- **Filter values must be normalised against real catalogue vocabulary.** Both stores match payload
+  values *exactly*, so a filter for `"crime"` against a catalogue that says `"Crime"` matches nothing
+  and fails **silently** — zero results are indistinguishable from "no such movies". Any value the
+  LLM produces that reaches a store as a filter (genres today; anything similar later) must be mapped
+  onto real catalogue values first, and unmappable values dropped rather than passed through. See
+  `agent/catalog.py`.
 - **Every node is traceable.** Wire LangSmith from Day 3 onward; don't bolt it on at the end.
 - **Every node emits structured logs from Day 3.** Each node logs its key decisions as structured
   fields as it is written — `intent` classified, `lead_engine` chosen, candidate counts per store,
@@ -468,11 +474,12 @@ tracing live.
 
 **Learn first:** LangGraph core — `StateGraph`, state (`TypedDict`), nodes as functions, edges,
 **conditional edges** (routing). Why state flows through, not around, nodes. **And reducers:** when
-`lead_engine=both`, two retrieval nodes run in parallel and write to the same state field — without
-an `Annotated[list, operator.add]` reducer telling LangGraph how to *combine* those writes, the
-second silently clobbers the first and half the candidates vanish. Introduce the annotation here,
-when `AgentState` is first defined, with a one-line comment explaining why it's there — not as a
-Day-4 debugging surprise.
+`lead_engine=both`, two retrieval nodes run in parallel and write to the same state field. LangGraph
+does *not* silently keep the last write — it raises `InvalidUpdateError` ("Can receive only one value
+per step"). An `Annotated[list, operator.add]` reducer tells it how to *combine* the two writes, and
+is therefore what makes the parallel fan-out legal at all. Introduce the annotation here, when
+`AgentState` is first defined, with a one-line comment explaining why it's there — not as a Day-4
+debugging surprise.
 
 **Build:**
 1. `agent/state.py` (`AgentState`, with reducers on the concurrently-written retrieval fields),
@@ -644,5 +651,13 @@ Resolved open questions, newest last. Each entry names the sections it changed.
 - **C — Structured logs from Day 3.** Every node logs its key decisions as structured fields *as it
   is written*. Observability is not retrofitted at the end. (§5, Day 3, Day 7)
 - **Parallel fan-out reducers** — confirmed as a Day-3 teaching point: concurrent writes to shared
-  `AgentState` fields need `Annotated[list, operator.add]` or the second write clobbers the first.
-  Introduced when `AgentState` is defined, not discovered as a Day-4 bug. (Day 3, Day 4)
+  `AgentState` fields need `Annotated[list, operator.add]`. Introduced when `AgentState` is defined,
+  not discovered as a Day-4 bug. (Day 3, Day 4)
+
+**Day 3 build (corrections found while implementing):**
+
+| # | Finding | Resolution | Sections changed |
+|---|---|---|---|
+| 6 | The reducer rationale as originally written was **wrong**: LangGraph does not silently clobber a concurrently-written key | It raises `InvalidUpdateError` ("Can receive only one value per step"). The reducer is therefore what makes parallel fan-out *legal*, not what prevents silent data loss. Corrected wording; proven by `tests/test_agent.py::test_without_a_reducer_concurrent_writes_are_rejected` | Day 3, `agent/state.py` |
+| 7 | LLM-extracted genres came back lower-cased (`"crime"`), and both stores match payload values exactly → **zero results, silently** | New `agent/catalog.py`: canonical vocabulary read from the graph, injected into the intent prompt, plus `normalize_genres()` as a code-level backstop. Unmappable values are dropped, never passed through | §5 (new guardrail), Day 3, Day 4 |
+| 8 | Named people were being dropped from both `filters.people` and `entities.people` (e.g. "films directed by Bong Joon-ho" extracted nobody) | Intent prompt now requires every named person to land in exactly one of the two, with worked examples | §3.4 prompt, Day 3 |

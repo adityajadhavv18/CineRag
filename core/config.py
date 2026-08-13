@@ -92,3 +92,32 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def configure_langsmith() -> bool:
+    """Export the env vars the LangSmith SDK reads (contract §6, Day 3).
+
+    LangSmith is configured entirely through the environment — LangGraph and the
+    wrapped OpenAI client pick these up on their own, so there is no client to
+    pass around. We export both spellings of the tracing flag: LANGCHAIN_TRACING_V2
+    is the older name the contract lists, LANGSMITH_TRACING is the current one,
+    and different library versions read different ones.
+
+    Returns True if tracing is actually on. Called once from agent/graph.py.
+    """
+    import os
+
+    if not (settings.langchain_tracing_v2 and settings.langsmith_api_key):
+        # Explicitly off, so a stale shell env var can't silently enable tracing
+        # and start shipping queries somewhere the user didn't ask for.
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        os.environ["LANGSMITH_TRACING"] = "false"
+        return False
+
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGCHAIN_API_KEY"] = settings.langsmith_api_key
+    os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key
+    os.environ["LANGCHAIN_PROJECT"] = settings.langsmith_project
+    os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+    return True

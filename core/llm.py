@@ -9,6 +9,7 @@ LangSmith tracing is wired on Day 3 — see the hook at the bottom.
 from __future__ import annotations
 
 import time
+import warnings
 from functools import lru_cache
 
 from openai import OpenAI, APIError, RateLimitError
@@ -30,8 +31,32 @@ EMBED_BATCH_SIZE = 128
 
 @lru_cache(maxsize=1)
 def get_client() -> OpenAI:
+    """The OpenAI client, wrapped for LangSmith tracing when tracing is enabled.
+
+    We use the plain OpenAI SDK rather than LangChain's chat models — fewer
+    abstractions between you and the request. `wrap_openai` is what buys back the
+    tracing that LangChain would have given for free: it records each call's
+    prompt, response, token counts and latency as a child span of whichever node
+    is running. Without it, LangSmith would show the node but not what it asked.
+    """
     settings.require("openai_api_key")
-    return OpenAI(api_key=settings.openai_api_key)
+    client = OpenAI(api_key=settings.openai_api_key)
+
+    if settings.langchain_tracing_v2 and settings.langsmith_api_key:
+        from langsmith.wrappers import wrap_openai
+
+        # Tracing serialises the whole completion to send to LangSmith, including
+        # the `parsed` field that structured outputs adds. Pydantic warns that the
+        # field's declared type is `None` — cosmetic, and it fires on every single
+        # traced call, which drowns our own logs. Silence just this one.
+        warnings.filterwarnings(
+            "ignore", message=".*serializer warnings.*", category=UserWarning,
+            module="pydantic.main",
+        )
+        client = wrap_openai(client)
+        log.info("openai_client_traced", project=settings.langsmith_project)
+
+    return client
 
 
 def embed_texts(texts: list[str], *, batch_size: int = EMBED_BATCH_SIZE) -> list[list[float]]:

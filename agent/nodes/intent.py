@@ -84,6 +84,22 @@ retrieve for them. Return ONLY the structured object.
             "gritty crime dramas starring Denzel Washington",
             "mind-bending sci-fi like Inception with a female lead"
 
+DECIDE THIS MECHANICALLY, from what you extracted — not from the wording. Work out the two
+questions below and read the answer off the table. Synonymous phrasings ("with X", "starring X",
+"featuring X", "that has X in it") MUST all produce the same lead_engine.
+
+  A. Did you put any person or title in filters.people / entities.people / entities.titles?
+  B. Does the request also describe a mood, theme, tone, subject or style
+     ("gritty", "cozy", "mind-bending", "about grief", "feel-good")?
+
+     A = no,  B = yes  ->  vector
+     A = yes, B = no   ->  graph
+     A = yes, B = yes  ->  both
+     A = no,  B = no   ->  vector
+
+A pure attribute filter with no names and no vibe ("horror rated above 8 from the 90s") is
+`vector`: payload filters do the work and there is nothing for the graph to traverse.
+
 For `general` and `off_topic`, no retrieval happens; use `vector` as an inert default.
 
 ## filters vs entities — the distinction that matters most
@@ -192,8 +208,8 @@ def intent_node(state: AgentState) -> dict:
     log.info(
         "intent_classified",
         query=state["query"][:80],
-        intent=rt.lead_engineesult.intent,
-        lead_engine=resul,
+        intent=result.intent,
+        lead_engine=result.lead_engine,
         filter_people=result.filters.people,
         entity_people=result.entities.people,
         entity_titles=result.entities.titles,

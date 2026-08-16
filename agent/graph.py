@@ -33,6 +33,7 @@ from agent.nodes.graph_enrich import graph_enrich
 from agent.nodes.graph_retrieve import graph_retrieve
 from agent.nodes.intent import intent_node
 from agent.nodes.off_topic import off_topic_node
+from agent.nodes.rerank import rerank
 from agent.nodes.vector_retrieve import vector_retrieve
 
 log = get_logger("graph")
@@ -84,6 +85,7 @@ def build_graph() -> StateGraph:
     builder.add_node("vector_retrieve", vector_retrieve)
     builder.add_node("graph_retrieve", graph_retrieve)
     builder.add_node("graph_enrich", graph_enrich)
+    builder.add_node("rerank", rerank)
     builder.add_node("final_response", final_response)
 
     builder.add_edge(START, "intent")
@@ -100,7 +102,8 @@ def build_graph() -> StateGraph:
     # done, not once per parent. That join is why enrichment sees the merged set.
     builder.add_edge("vector_retrieve", "graph_enrich")
     builder.add_edge("graph_retrieve", "graph_enrich")
-    builder.add_edge("graph_enrich", "final_response")
+    builder.add_edge("graph_enrich", "rerank")
+    builder.add_edge("rerank", "final_response")
 
     builder.add_edge("general", END)
     builder.add_edge("off_topic", END)

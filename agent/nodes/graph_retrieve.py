@@ -68,6 +68,25 @@ def graph_retrieve(state: AgentState) -> dict:
                         bits.append("/".join(genres))
                     reasons[row["tmdb_id"]] = "constraints: " + " ".join(bits or ["year/rating"])
                     rows.append(row)
+
+        # 3. SOFT-SIGNAL traversal (contract §3.4). A mentioned person — "like a
+        # Tarantino film" — is not a constraint, so it must never exclude. But it
+        # is a traversal hint: his films are strong reference points, so we ADD
+        # them as candidates and let fusion decide whether they rank.
+        #
+        # This is the difference between the two buckets made concrete: the same
+        # name in filters.people would have restricted the whole result set; here
+        # it only contributes extra candidates alongside everything else.
+        # One query PER person, not one query for all of them: search_movies ANDs
+        # its people (correct for constraints — "with Denzel AND directed by
+        # Fuqua"), but soft signals are an OR. "Like Tarantino or Kubrick" should
+        # surface both filmographies, not the empty set of films they co-made.
+        for person in entities.get("people") or []:
+            for row in neo4j_client.search_movies(people=[person], limit=10):
+                if row["tmdb_id"] not in seen:
+                    seen.add(row["tmdb_id"])
+                    reasons[row["tmdb_id"]] = f"mentioned: {person}"
+                    rows.append(row)
     except Exception as exc:  # noqa: BLE001
         log.error("graph_retrieve_failed", error=type(exc).__name__, detail=str(exc)[:200])
         return {

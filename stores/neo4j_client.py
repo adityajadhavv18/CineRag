@@ -13,6 +13,7 @@ from neo4j import Driver, GraphDatabase
 
 from core.config import settings
 from core.logger import get_logger
+from core.text import normalize_name
 
 log = get_logger("neo4j_client")
 
@@ -94,6 +95,102 @@ def franchise_timeline(tmdb_id: int) -> list[dict]:
         ORDER BY m.year
         """,
         tmdb_id=tmdb_id,
+    )
+
+
+"""Rows returned by the retrieval queries carry their graph facts inline.
+
+graph_retrieve's rows are self-describing (genres, directors, cast, collection)
+so that a graph-led query needs no separate enrichment pass — which is exactly
+what contract §2.2 says: for lead_engine="graph", graph_retrieve runs alone.
+"""
+RETRIEVAL_FIELDS = """
+    m.tmdb_id AS tmdb_id, m.title AS title, m.year AS year,
+    m.rating AS rating, m.popularity AS popularity,
+    m.poster_path AS poster_path, m.backdrop_path AS backdrop_path,
+    [(m)-[:HAS_GENRE]->(g:Genre) | g.name]                AS genres,
+    [(d:Person)-[:DIRECTED]->(m)  | d.name]               AS directors,
+    [(a:Person)-[:ACTED_IN]->(m)  | a.name][..10]         AS cast_names,
+    head([(m)-[:PART_OF]->(c:Collection) | c.id])         AS collection_id,
+    head([(m)-[:PART_OF]->(c:Collection) | c.name])       AS collection_name
+"""
+
+
+def movies_by_titles(titles: list[str], limit_per_title: int = 3) -> list[dict]:
+    """Exact-fact shortcut: resolve named titles to Movie nodes.
+
+    Tries an exact case-insensitive match first, then falls back to a prefix
+    match — users type "Alien" meaning the franchise, and "Lord of the Rings"
+    for "The Lord of the Rings: The Fellowship of the Ring".
+    """
+    if not titles:
+        return []
+    return _query(
+        f"""
+        UNWIND $titles AS wanted
+        MATCH (m:Movie)
+        WHERE toLower(m.title) = toLower(wanted)
+           OR toLower(m.title) STARTS WITH toLower(wanted)
+        WITH m, wanted,
+             CASE WHEN toLower(m.title) = toLower(wanted) THEN 0 ELSE 1 END AS exactness
+        ORDER BY exactness, m.popularity DESC
+        WITH wanted, collect(m)[..$limit_per_title] AS matches
+        UNWIND matches AS m
+        RETURN {RETRIEVAL_FIELDS}, wanted AS matched_title
+        """,
+        titles=titles,
+        limit_per_title=limit_per_title,
+    )
+
+
+def search_movies(
+    people: list[str] | None = None,
+    genres: list[str] | None = None,
+    year_range: list[int] | None = None,
+    min_rating: float | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Constraint search: every supplied constraint is a HARD requirement (§3.4).
+
+    Note `ALL(... WHERE EXISTS { ... })`: multiple people are ANDed, so "with
+    Denzel Washington and directed by Antoine Fuqua" needs both on the same film.
+    A person matches as either cast or director — the user rarely distinguishes,
+    and asking for "movies with Clint Eastwood" should not miss the ones he only
+    directed.
+
+    Ordering is popularity-descending. That is a deliberate placeholder: the graph
+    has no notion of relevance to a *vibe*, so it offers its most prominent
+    matches and lets Day 5's fusion decide what actually ranks.
+    """
+    # Fold the requested names the same way ingestion folded the stored ones, so
+    # "Bong Joon-ho" finds the node stored as "Bong Joon Ho".
+    people = [normalize_name(p) for p in (people or []) if p]
+    genres = genres or []
+    lo, hi = (year_range or [None, None])[:2] if year_range else (None, None)
+
+    return _query(
+        f"""
+        MATCH (m:Movie)
+        WHERE ($people = [] OR ALL(wanted IN $people WHERE EXISTS {{
+                  MATCH (p:Person)-[:ACTED_IN|DIRECTED]->(m)
+                  WHERE p.name_normalized = wanted
+              }}))
+          AND ($genres = [] OR ALL(wanted IN $genres WHERE EXISTS {{
+                  MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name = wanted
+              }}))
+          AND ($lo IS NULL OR m.year >= $lo)
+          AND ($hi IS NULL OR m.year <= $hi)
+          AND ($min_rating IS NULL OR m.rating >= $min_rating)
+        RETURN {RETRIEVAL_FIELDS}
+        ORDER BY m.popularity DESC
+        LIMIT $limit
+        """,
+        people=people,
+        genres=genres,
+        lo=lo,
+        hi=hi,
+        min_rating=min_rating,
+        limit=limit,
     )
 
 

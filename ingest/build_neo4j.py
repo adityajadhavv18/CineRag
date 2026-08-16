@@ -27,6 +27,7 @@ from tqdm import tqdm
 
 from core.config import settings
 from core.logger import get_logger
+from core.text import normalize_name
 
 log = get_logger("build_neo4j")
 
@@ -43,6 +44,10 @@ CONSTRAINTS = [
     # Not unique — several distinct people legitimately share a name. This index
     # just makes "find the person called X" fast; it resolves to person_id nodes.
     "CREATE INDEX person_name IF NOT EXISTS FOR (p:Person) ON (p.name)",
+    # The index lookups actually use: "Bong Joon-ho" and "Bong Joon Ho" fold to
+    # the same key, so a name variant is an indexed equality hit rather than a
+    # silent zero-row result. See core/text.normalize_name.
+    "CREATE INDEX person_name_normalized IF NOT EXISTS FOR (p:Person) ON (p.name_normalized)",
 ]
 
 PASSES: list[tuple[str, str]] = [
@@ -90,7 +95,7 @@ PASSES: list[tuple[str, str]] = [
         MATCH (m:Movie {tmdb_id: row.tmdb_id})
         UNWIND row.director AS d
         MERGE (p:Person {person_id: d.tmdb_person_id})
-        SET p.name = d.name
+        SET p.name = d.name, p.name_normalized = d.name_normalized
         MERGE (p)-[:DIRECTED]->(m)
         """,
     ),
@@ -104,7 +109,7 @@ PASSES: list[tuple[str, str]] = [
         MATCH (m:Movie {tmdb_id: row.tmdb_id})
         UNWIND row.cast AS c
         MERGE (p:Person {person_id: c.tmdb_person_id})
-        SET p.name = c.name
+        SET p.name = c.name, p.name_normalized = c.name_normalized
         MERGE (p)-[r:ACTED_IN]->(m)
         SET r.character = c.character
         """,
@@ -131,7 +136,14 @@ def load_records() -> list[dict]:
         )
     # Iterating the file handle splits on "\n" only, which is what we want.
     with path.open(encoding="utf-8") as fh:
-        return [json.loads(line) for line in fh if line.strip()]
+        records = [json.loads(line) for line in fh if line.strip()]
+
+    # Precompute the lookup key here rather than in Cypher: Python can strip
+    # accents properly, and it keeps the Cypher an indexed equality check.
+    for record in records:
+        for person in (record.get("director") or []) + (record.get("cast") or []):
+            person["name_normalized"] = normalize_name(person.get("name"))
+    return records
 
 
 def batched(rows: list[dict], size: int) -> Iterator[list[dict]]:

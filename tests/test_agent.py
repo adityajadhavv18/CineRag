@@ -71,11 +71,48 @@ def test_without_a_reducer_concurrent_writes_are_rejected():
         _build_parallel_graph("without_reducer").compile().invoke({})
 
 
-def test_retrieval_fields_are_reduced_in_the_real_state():
-    """Guard the actual AgentState, not just the toy one above."""
+def test_accumulating_fields_are_reduced_in_the_real_state():
+    """Guard the actual AgentState, not just the toy one above.
+
+    `trace` and `retrieval_errors` are the ones that genuinely conflict when
+    lead_engine="both" — every node writes trace, so two retrievers in one
+    superstep collide on it. vector_results/graph_results have one writer each
+    today and are annotated for correctness and future writers.
+    """
     hints = AgentState.__annotations__
-    for field in ("vector_results", "graph_results", "trace"):
+    for field in ("vector_results", "graph_results", "trace", "retrieval_errors"):
         assert "Annotated" in str(hints[field]), f"{field} lost its reducer"
+
+
+def test_both_retrievers_collide_on_trace_specifically():
+    """The concrete conflict lead_engine="both" creates.
+
+    Two nodes writing DIFFERENT result keys never conflict; they conflict on the
+    key they share. Pinning this so the reducer rationale stays honest.
+    """
+    from langgraph.errors import InvalidUpdateError
+
+    class _S(TypedDict, total=False):
+        vector_results: list
+        graph_results: list
+        trace: list  # deliberately un-reduced
+
+    def v(_s):
+        return {"vector_results": [1], "trace": ["v"]}
+
+    def g(_s):
+        return {"graph_results": [2], "trace": ["g"]}
+
+    b = StateGraph(_S)
+    b.add_node("v", v)
+    b.add_node("g", g)
+    b.add_edge(START, "v")
+    b.add_edge(START, "g")
+    b.add_edge("v", END)
+    b.add_edge("g", END)
+
+    with pytest.raises(InvalidUpdateError, match="trace"):
+        b.compile().invoke({})
 
 
 def test_initial_state_seeds_the_reduced_lists():
@@ -147,6 +184,27 @@ def test_lead_engine_selection(query, lead):
     from agent.nodes.intent import classify
 
     assert classify(query).lead_engine == lead
+
+
+@pytest.mark.llm
+def test_lead_engine_is_invariant_to_phrasing():
+    """Synonymous phrasings must route identically.
+
+    Regression: `both`'s prompt examples all used the word "starring", so the
+    model pattern-matched on the word — "gritty crime dramas STARRING Denzel"
+    routed `both` while "...WITH Denzel" routed `vector`, dropping the graph from
+    a query that names a person. Fixed by deriving lead_engine mechanically from
+    the extracted fields instead of from the wording.
+    """
+    from agent.nodes.intent import classify
+
+    phrasings = [
+        "gritty crime dramas with Denzel Washington",
+        "gritty crime dramas starring Denzel Washington",
+        "gritty crime dramas featuring Denzel Washington",
+    ]
+    leads = {classify(q).lead_engine for q in phrasings}
+    assert leads == {"both"}, f"phrasing changed the route: {leads}"
 
 
 @pytest.mark.llm

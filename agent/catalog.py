@@ -63,6 +63,101 @@ def _genre_lookup() -> dict[str, str]:
     return lookup
 
 
+def probe(genres: list[str] | None = None, limit: int = 5) -> dict:
+    """Look at the shelf before asking the question (contract §2.3, Day 6).
+
+    Returns narrowing options that are guaranteed to have films behind them,
+    because every one is counted straight out of the graph. An LLM inventing
+    plausible-sounding options ("80s martial arts", "Hong Kong action") can offer
+    a category matching ZERO of our 4,966 films — the user picks it, retrieval
+    returns nothing, and the clarification made the conversation worse.
+
+    Counts are returned alongside each option so the caller can drop thin ones.
+    """
+    from stores import neo4j_client
+
+    genres = genres or []
+    result: dict = {"genres": genres, "pairings": [], "decades": [], "people": [], "total": 0}
+
+    try:
+        result["total"] = neo4j_client._query(
+            """
+            MATCH (m:Movie)
+            WHERE $genres = [] OR EXISTS {
+                MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres
+            }
+            RETURN count(m) AS total
+            """,
+            genres=genres,
+        )[0]["total"]
+
+        if genres:
+            # Which other genres these films are ALSO tagged with — the natural
+            # "action, but what kind of action?" axis.
+            result["pairings"] = neo4j_client._query(
+                """
+                MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres
+                MATCH (m)-[:HAS_GENRE]->(other:Genre) WHERE NOT other.name IN $genres
+                RETURN other.name AS option, count(DISTINCT m) AS films
+                ORDER BY films DESC LIMIT $limit
+                """,
+                genres=genres,
+                limit=limit,
+            )
+            result["decades"] = neo4j_client._query(
+                """
+                MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre)
+                WHERE g.name IN $genres AND m.year IS NOT NULL
+                WITH (m.year / 10) * 10 AS decade, count(*) AS films
+                WHERE films >= 20
+                RETURN decade AS option, films ORDER BY decade DESC LIMIT $limit
+                """,
+                genres=genres,
+                limit=limit,
+            )
+            result["people"] = neo4j_client._query(
+                """
+                MATCH (p:Person)-[:ACTED_IN]->(m:Movie)-[:HAS_GENRE]->(g:Genre)
+                WHERE g.name IN $genres
+                RETURN p.name AS option, count(DISTINCT m) AS films
+                ORDER BY films DESC LIMIT $limit
+                """,
+                genres=genres,
+                limit=limit,
+            )
+        else:
+            # Nothing to narrow from at all ("recommend some movies") — offer the
+            # catalogue's biggest genres as a starting point.
+            result["pairings"] = neo4j_client._query(
+                """
+                MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre)
+                RETURN g.name AS option, count(m) AS films
+                ORDER BY films DESC LIMIT $limit
+                """,
+                limit=limit,
+            )
+            result["decades"] = neo4j_client._query(
+                """
+                MATCH (m:Movie) WHERE m.year IS NOT NULL
+                WITH (m.year / 10) * 10 AS decade, count(*) AS films
+                WHERE films >= 100
+                RETURN decade AS option, films ORDER BY decade DESC LIMIT $limit
+                """,
+                limit=limit,
+            )
+    except Exception as exc:  # noqa: BLE001 — a failed probe must still let us ask
+        log.warning("probe_failed", error=type(exc).__name__)
+
+    log.info(
+        "catalogue_probed",
+        seed_genres=genres,
+        pairings=len(result["pairings"]),
+        decades=len(result["decades"]),
+        people=len(result["people"]),
+    )
+    return result
+
+
 def normalize_genres(values: list[str] | None) -> list[str]:
     """Map whatever the LLM produced onto real catalogue values, dropping unknowns.
 

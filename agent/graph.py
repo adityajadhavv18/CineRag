@@ -27,7 +27,9 @@ from langgraph.graph import END, START, StateGraph
 from core.config import configure_langsmith, settings
 from core.logger import get_logger
 from agent.state import AgentState
+from agent.nodes.clarification import clarification_node
 from agent.nodes.final_response import final_response
+from agent.nodes.franchise import franchise_node
 from agent.nodes.general import general_node
 from agent.nodes.graph_enrich import graph_enrich
 from agent.nodes.graph_retrieve import graph_retrieve
@@ -57,7 +59,7 @@ def route_by_intent(state: AgentState) -> list[str]:
     # Only the two no-retrieval intents get their own door. Everything else —
     # recommend, factual_lookup, follow_up, and (until Day 6) clarification —
     # goes through retrieval, so adding a retrieval intent needs no change here.
-    if intent in ("general", "off_topic"):
+    if intent in ("general", "off_topic", "clarification"):
         log.info("routed", intent=intent, destination=[intent])
         return [intent]
 
@@ -82,11 +84,13 @@ def build_graph() -> StateGraph:
     builder.add_node("intent", intent_node)
     builder.add_node("general", general_node)
     builder.add_node("off_topic", off_topic_node)
+    builder.add_node("clarification", clarification_node)
     builder.add_node("vector_retrieve", vector_retrieve)
     builder.add_node("graph_retrieve", graph_retrieve)
     builder.add_node("graph_enrich", graph_enrich)
     builder.add_node("rerank", rerank)
     builder.add_node("final_response", final_response)
+    builder.add_node("franchise", franchise_node)
 
     builder.add_edge(START, "intent")
     builder.add_conditional_edges(
@@ -94,7 +98,7 @@ def build_graph() -> StateGraph:
         route_by_intent,
         # The set of nodes this edge may jump to. Declaring it keeps the drawn
         # diagram accurate and makes a typo'd destination fail loudly.
-        ["general", "off_topic", "vector_retrieve", "graph_retrieve"],
+        ["general", "off_topic", "clarification", "vector_retrieve", "graph_retrieve"],
     )
 
     # Both retrievers converge on enrich. When both ran, LangGraph waits for BOTH
@@ -104,10 +108,14 @@ def build_graph() -> StateGraph:
     builder.add_edge("graph_retrieve", "graph_enrich")
     builder.add_edge("graph_enrich", "rerank")
     builder.add_edge("rerank", "final_response")
+    # franchise runs AFTER the answer is written, over the films it cited — so it
+    # appends a timeline rather than influencing what was recommended.
+    builder.add_edge("final_response", "franchise")
 
     builder.add_edge("general", END)
     builder.add_edge("off_topic", END)
-    builder.add_edge("final_response", END)
+    builder.add_edge("clarification", END)
+    builder.add_edge("franchise", END)
 
     return builder
 

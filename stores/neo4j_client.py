@@ -107,6 +107,7 @@ what contract §2.2 says: for lead_engine="graph", graph_retrieve runs alone.
 RETRIEVAL_FIELDS = """
     m.tmdb_id AS tmdb_id, m.title AS title, m.year AS year,
     m.rating AS rating, m.popularity AS popularity,
+    m.overview AS overview, m.tagline AS tagline,
     m.poster_path AS poster_path, m.backdrop_path AS backdrop_path,
     [(m)-[:HAS_GENRE]->(g:Genre) | g.name]                AS genres,
     [(d:Person)-[:DIRECTED]->(m)  | d.name]               AS directors,

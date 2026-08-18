@@ -190,7 +190,12 @@ never rewritten wholesale.
 - **Search mode**: **dense semantic search only** (`text-embedding-3-small`) + payload filters.
   No sparse vector in the collection config for v1.
 - **Payload** (stored for filtering + returning): `tmdb_id, title, year, genres, director,
-  cast_names, rating, popularity, runtime, collection_id, poster_path, backdrop_path`.
+  cast_names, rating, popularity, runtime, collection_id, poster_path, backdrop_path,
+  **overview, tagline**`.
+  > `overview`/`tagline` are stored as TEXT as well as being embedded. A vector cannot be read
+  > back, so without the words nothing can describe a film and an LLM asked to would supply the
+  > plot from memory. Refreshing them needs no re-embedding:
+  > `uv run python -m ingest.build_qdrant --payload-only`.
 - **Indexed payload fields** (for fast filtered search): `genres`, `year`, `rating`.
 
 > **Phase-2 hook (deliberately deferred):** sparse/BM25 fusion is a *measured* Phase-2 add. It
@@ -217,7 +222,8 @@ requires re-embedding all ~5,000 points. Do not tweak it casually mid-build.
 
 ### 3.3 Neo4j schema
 
-**Nodes:** `Movie {tmdb_id, title, year, rating, popularity, poster_path, backdrop_path}`,
+**Nodes:** `Movie {tmdb_id, title, year, overview, tagline, rating, popularity, runtime,
+release_date, poster_path, backdrop_path}`,
 `Person {person_id, name}`, `Genre {name}`, `Keyword {name}`, `Collection {id, name}`.
 
 **Relationships:**
@@ -364,8 +370,12 @@ cinerag/
 
 - **Real data only.** Never fabricate movie facts, cast, directors, plots, or franchise links.
   Every graph edge and every recommended title must trace to the TMDB snapshot.
-- **Grounding is non-negotiable.** `final_response_node` may only recommend/cite movies present in
-  the retrieved results. If retrieval is empty, say so — never invent a title to fill the gap.
+- **Grounding is non-negotiable, and it covers CLAIMS as well as TITLES.** `final_response_node`
+  may only recommend/cite movies present in the retrieved results — if retrieval is empty, say so
+  rather than inventing a title. It must equally not invent *facts about* those movies: a plot
+  summary must paraphrase the stored `overview`, never the model's own memory of the film.
+  Citation validation catches the first failure; supplying the real text is what prevents the
+  second, because nothing downstream can detect a fluent, wrong synopsis.
 - **Never store image binaries.** Only `poster_path` / `backdrop_path` strings. Images load from
   TMDB CDN client-side.
 - **Ingestion must be resumable, and pulled once.** `tmdb_pull.py` caches raw JSON to `data/raw/` and
@@ -661,3 +671,16 @@ Resolved open questions, newest last. Each entry names the sections it changed.
 | 6 | The reducer rationale as originally written was **wrong**: LangGraph does not silently clobber a concurrently-written key | It raises `InvalidUpdateError` ("Can receive only one value per step"). The reducer is therefore what makes parallel fan-out *legal*, not what prevents silent data loss. Corrected wording; proven by `tests/test_agent.py::test_without_a_reducer_concurrent_writes_are_rejected` | Day 3, `agent/state.py` |
 | 7 | LLM-extracted genres came back lower-cased (`"crime"`), and both stores match payload values exactly → **zero results, silently** | New `agent/catalog.py`: canonical vocabulary read from the graph, injected into the intent prompt, plus `normalize_genres()` as a code-level backstop. Unmappable values are dropped, never passed through | §5 (new guardrail), Day 3, Day 4 |
 | 8 | Named people were being dropped from both `filters.people` and `entities.people` (e.g. "films directed by Bong Joon-ho" extracted nobody) | Intent prompt now requires every named person to land in exactly one of the two, with worked examples | §3.4 prompt, Day 3 |
+
+**Post-Day-6 addition — film detail (`overview` in the stores):**
+
+Raised because "tell me about Inception" returned 48 characters. Three stacked causes, and the
+data one is the reason the other two could not simply be prompted away.
+
+| # | Finding | Decision | Sections changed |
+|---|---|---|---|
+| 9 | `overview` and `tagline` were embedded into the Qdrant vector and then **discarded** — present in `movies.jsonl`, absent from both stores. Nothing could describe a film | Store both fields in **both** stores, same reasoning as `poster_path`: either store may answer alone. Qdrant via a **payload-only** update (no re-embedding, vectors untouched, ~3s); Neo4j via a normal rebuild (~20s) | §3.2 payload, §3.3 Movie node, `ingest/build_qdrant.py --payload-only` |
+| 10 | **A grounding hole**: `validate_citations` checks *which films are named*, never *what is claimed about them*. Asked to describe a film with no plot supplied, the model writes a fluent synopsis from memory and nothing catches it | Supply the real overview, labelled `plot:`, and require the answer to paraphrase it. Plot is included **only for detail-shaped queries** — 15 recommendation candidates × ~70 tokens is ~1,000 wasted tokens per request. Tested in `tests/test_detail.py` | §5 (grounding now covers claims, not just titles) |
+| 11 | No 7th intent added. "Tell me about X" is `factual_lookup` with a different response shape | `wants_detail()` branches on the **user's own words** (a named title + no attribute word), not on `refined_query` — which is model-written and had rewritten "tell me about Inception" into "who directed Inception", silently narrowing the request | Day 5 `final_response`, taxonomy unchanged at six intents |
+| 12 | `refined_query` was **answering** questions instead of restating them ("what is Inception about" → "Inception is a film about a thief who enters dreams") — an ungrounded answer from model memory, sitting in state before retrieval ran | Intent prompt now forbids two things explicitly: never answer the question, never narrow the request | §3.4 prompt |
+| 13 | Titles that are also ordinary words (**Inception**, Alien, Up, Her, Heat) classified as `general` about 3 times in 4 — the model read "inception" as the noun | `general` is now defined as *only* about the conversation or the assistant: any message naming a film, person or genre can never be `general`. Stable 4/4 after the change, with `hi`/`thanks` unaffected | §3.4 prompt |

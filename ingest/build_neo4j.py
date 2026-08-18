@@ -58,6 +58,8 @@ PASSES: list[tuple[str, str]] = [
         MERGE (m:Movie {tmdb_id: row.tmdb_id})
         SET m.title         = row.title,
             m.year          = row.year,
+            m.overview      = row.overview,
+            m.tagline       = row.tagline,
             m.rating        = row.rating,
             m.popularity    = row.popularity,
             m.runtime       = row.runtime,

@@ -71,6 +71,13 @@ retrieve for them. Return ONLY the structured object.
                     "hi", "what can you do", "who are you", "thanks"
 - `off_topic`       not about movies at all. "what's the weather", "write me a python script"
 
+`general` is ONLY about the conversation or the assistant. If the message names a film, a
+person, a genre, or asks for anything about films, it is NEVER `general` — pick one of the
+first four instead. "Tell me about <film>" is `factual_lookup`, not small talk.
+
+Watch for titles that are also ordinary words — Inception, Alien, Up, Her, Heat, Gravity,
+Drive. "Tell me about Inception" is a question about the FILM, not about beginnings.
+
 ## lead_engine — which store should lead?
 
 - `vector`  MOOD / VIBE / THEME queries with no named person or title. The answer depends on
@@ -142,9 +149,25 @@ requested genre has no equivalent in the list, leave it out of `filters.genres` 
 
 ## refined_query
 
-Rewrite the user's message as a single self-contained sentence describing what they want,
+Rewrite the user's message as a single self-contained sentence describing WHAT THEY WANT,
 resolving any pronouns or references using the conversation history. Downstream retrieval sees
 ONLY this string, never the history. For `general`/`off_topic`, echo the message back.
+
+Two things it must never do:
+
+NEVER ANSWER THE QUESTION. This field states the request; it does not satisfy it. Nothing has
+been retrieved yet, so any answer here comes from your own memory and is ungrounded.
+    "what is Inception about"
+      WRONG -> "Inception is a film about a thief who enters people's dreams."   (an answer)
+      RIGHT -> "what the film Inception is about"                                 (the request)
+
+NEVER NARROW THE REQUEST. Keep the same breadth the user used. Do not invent a specific
+attribute they did not ask for.
+    "tell me about Inception"
+      WRONG -> "who directed Inception"          (they never asked about the director)
+      RIGHT -> "tell me about the film Inception"
+
+An open request must stay open, and a specific question must stay specific.
 """
 
 

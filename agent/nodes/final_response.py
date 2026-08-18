@@ -58,12 +58,76 @@ guessing.
 5. Be brief — this is a question, not a recommendation.
 """
 
+# "Tell me about Inception" is not a factual lookup with a missing fact — it is a
+# request for a profile. Answering it with one sentence ("directed by Christopher
+# Nolan") is technically correct and useless.
+#
+# The dangerous part is rule 2. A model asked to describe a film it was not given
+# a plot for will write a fluent, accurate-sounding synopsis FROM MEMORY — and
+# validate_citations cannot catch that, because it checks which films are named,
+# never what is claimed about them. Supplying the real overview is what makes the
+# description checkable; the rule is what points the model at it.
+DETAIL_PROMPT = """\
+You are a movie assistant describing a film the user asked about. Use ONLY the \
+numbered films in the CANDIDATES block.
 
-def build_context(rows: list[dict], enrichment: dict) -> str:
+Rules:
+1. Describe the film the user named: what it is about, who made it, who is in it, \
+when it came out, and how it is regarded.
+2. The plot summary MUST be a paraphrase of the `plot:` text given for that film. \
+Do not add plot events, characters, twists or endings that are not in that text — \
+even if you know the film. If no plot text is given, describe the film from the \
+other fields and do not invent a synopsis.
+3. Cite the film with its number in square brackets the FIRST time you name it, like \
+"Inception [1] is a ...". This is required — the citation is what links the answer to \
+a real catalogue entry.
+4. Never name a film that is not in the block.
+5. Two or three short paragraphs, or a short paragraph plus a few bullets. \
+Conversational, not a database dump.
+"""
+
+# Words that mean the user wants ONE specific fact rather than a profile.
+ATTRIBUTE_WORDS = (
+    "who direct", "who wrote", "who stars", "who is in", "who acted",
+    "what year", "when was", "when did", "how long", "runtime",
+    "rating", "how many", "which year", "released",
+)
+
+
+def wants_detail(state: AgentState) -> bool:
+    """Open request for a profile, or a pointed question?
+
+    Decided from the extracted state rather than the phrasing where possible: a
+    named title with no attribute word in the question is a "tell me about X".
+    Same shape as the lead_engine decision table — derive it, don't pattern-match
+    on wording.
+    """
+    if state.get("intent") != "factual_lookup":
+        return False
+    if not (state.get("entities") or {}).get("titles"):
+        return False
+
+    # Read the user's OWN words, not refined_query. refined_query is model-written
+    # and can drift: "tell me about Inception" was once rewritten to "who directed
+    # Inception", which flipped this check and produced a one-line answer to an
+    # open question. The prompt now forbids that narrowing, but the shape of the
+    # request is something only the original phrasing can be trusted to carry.
+    question = (state.get("query") or "").lower()
+    if not question:
+        question = (state.get("refined_query") or "").lower()
+    return not any(word in question for word in ATTRIBUTE_WORDS)
+
+
+def build_context(rows: list[dict], enrichment: dict, include_plot: bool = False) -> str:
     """The numbered block the answer must be built from.
 
     Include the fields an explanation needs (director, cast, genres, year,
     rating) so the model can say WHY a film fits without inventing detail.
+
+    `include_plot` is off by default on purpose. An overview is ~70 tokens, so
+    adding it to 15 recommendation candidates costs ~1,000 tokens per request for
+    text the answer will barely use. A detail query has one or two candidates and
+    needs the plot, so it pays for itself there and nowhere else.
     """
     lines = []
     for i, row in enumerate(rows, start=1):
@@ -81,9 +145,21 @@ def build_context(rows: list[dict], enrichment: dict) -> str:
             bits.append(f"starring {', '.join(cast[:4])}")
         if row.get("rating"):
             bits.append(f"rated {row['rating']:.1f}")
-        if links.get("collection_name"):
-            bits.append(f"part of {links['collection_name']}")
-        lines.append("  " + " | ".join(bits))
+        if row.get("runtime"):
+            bits.append(f"{row['runtime']} min")
+        if links.get("collection_name") or row.get("collection_name"):
+            bits.append(f"part of {links.get('collection_name') or row.get('collection_name')}")
+        line = "  " + " | ".join(bits)
+
+        if include_plot:
+            # Labelled `plot:` and `tagline:` so the prompt can point at them by
+            # name — "paraphrase the plot: text" is checkable guidance in a way
+            # that "use the given information" is not.
+            if row.get("tagline"):
+                line += f"\n      tagline: {row['tagline']}"
+            if row.get("overview"):
+                line += f"\n      plot: {row['overview']}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -152,8 +228,17 @@ def final_response(state: AgentState) -> dict:
         return _honest_empty(state)
 
     enrichment = state.get("enrichment") or {}
-    context = build_context(rows, enrichment)
+    detail = wants_detail(state)
     is_factual = state.get("intent") == "factual_lookup"
+
+    if detail:
+        mode, prompt = "detail", DETAIL_PROMPT
+    elif is_factual:
+        mode, prompt = "factual", FACTUAL_PROMPT
+    else:
+        mode, prompt = "recommend", SYSTEM_PROMPT
+
+    context = build_context(rows, enrichment, include_plot=detail)
 
     user_message = (
         f"User asked: {state.get('refined_query') or state['query']}\n\n"
@@ -163,7 +248,7 @@ def final_response(state: AgentState) -> dict:
     try:
         raw = chat(
             [
-                {"role": "system", "content": FACTUAL_PROMPT if is_factual else SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.3,
@@ -179,9 +264,33 @@ def final_response(state: AgentState) -> dict:
 
     text, citations, invalid = validate_citations(raw, rows)
 
+    # Safety net for detail mode. The whole answer is ABOUT one film, so an
+    # uncited profile still has an unambiguous source — and without a citation the
+    # API returns no `sources`, leaving the frontend with no poster to render and
+    # franchise_node with nothing to build a timeline from.
+    #
+    # This attaches a source the answer genuinely used; it never invents one. The
+    # rule it must not break is the reverse direction: reporting a film the answer
+    # did NOT discuss.
+    if detail and not citations and rows:
+        citations = [
+            {
+                "n": 1,
+                "tmdb_id": rows[0]["tmdb_id"],
+                "title": rows[0]["title"],
+                "year": rows[0].get("year"),
+                "poster_path": rows[0].get("poster_path"),
+                "backdrop_path": rows[0].get("backdrop_path"),
+            }
+        ]
+        log.info("detail_citation_inferred", title=rows[0]["title"],
+                 reason="answer describes this film but emitted no [N]")
+
     log.info(
         "response_generated",
         intent=state.get("intent"),
+        mode=mode,
+        plot_supplied=detail,
         candidates=len(rows),
         cited=len(citations),
         invalid_citations=invalid,

@@ -67,6 +67,13 @@ def build_payload(movie: dict) -> dict:
         "tmdb_id": movie["tmdb_id"],
         "title": movie["title"],
         "year": movie.get("year"),
+        # The plot text itself, not just its embedding. We embed the overview into
+        # the vector, but a vector cannot be read back — so without keeping the
+        # words, nothing downstream can DESCRIBE a film, and an LLM asked to would
+        # supply the plot from memory. Storing it is what keeps a description
+        # grounded (contract §5).
+        "overview": movie.get("overview") or "",
+        "tagline": movie.get("tagline") or "",
         "genres": movie.get("genres") or [],
         "director": [d["name"] for d in movie.get("director") or []],
         "cast_names": [c["name"] for c in movie.get("cast") or []],
@@ -120,6 +127,49 @@ def ensure_collection(client: QdrantClient, recreate: bool) -> None:
     log.info("payload_indexes_ready", fields=["genres", "year", "rating"])
 
 
+def run_payload_only(records: list[dict]) -> None:
+    """Refresh payloads WITHOUT re-embedding (contract §3.2).
+
+    A payload is metadata stored beside the vector; changing it does not change
+    the vector. So adding a field like `overview` is a metadata update, not a
+    re-index — no OpenAI calls, no cost, seconds instead of minutes.
+
+    Worth having as its own path rather than just re-running the full build: at
+    5k films re-embedding is 60s and about a cent, but the instinct "changing
+    stored text means re-embedding everything" is wrong and gets expensive fast.
+    """
+    client = QdrantClient(url=settings.qdrant_url)
+    if not client.collection_exists(settings.qdrant_collection):
+        raise RuntimeError(
+            f"collection {settings.qdrant_collection!r} does not exist — "
+            "run without --payload-only first"
+        )
+
+    log.info("payload_update_start", records=len(records), embedding_calls=0)
+
+    updated = 0
+    for start in tqdm(range(0, len(records), UPSERT_BATCH_SIZE), desc="payloads", unit="batch"):
+        chunk = records[start : start + UPSERT_BATCH_SIZE]
+        # One SetPayload op per point (each has a different payload), many ops
+        # per request.
+        client.batch_update_points(
+            collection_name=settings.qdrant_collection,
+            update_operations=[
+                models.SetPayloadOperation(
+                    set_payload=models.SetPayload(
+                        payload=build_payload(m), points=[m["tmdb_id"]]
+                    )
+                )
+                for m in chunk
+            ],
+            wait=True,
+        )
+        updated += len(chunk)
+
+    info = client.get_collection(settings.qdrant_collection)
+    log.info("payload_update_complete", updated=updated, points=info.points_count)
+
+
 def run(limit: int | None, recreate: bool) -> None:
     settings.require("openai_api_key")
     records = load_records(limit)
@@ -159,8 +209,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Embed movies into Qdrant")
     parser.add_argument("--limit", type=int, default=None, help="only index the first N movies")
     parser.add_argument("--recreate", action="store_true", help="drop the collection first")
+    parser.add_argument(
+        "--payload-only", action="store_true",
+        help="refresh payloads without re-embedding (no OpenAI calls)",
+    )
     args = parser.parse_args()
-    run(args.limit, args.recreate)
+    if args.payload_only:
+        run_payload_only(load_records(args.limit))
+    else:
+        run(args.limit, args.recreate)
     return 0
 
 

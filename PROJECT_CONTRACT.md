@@ -684,3 +684,17 @@ data one is the reason the other two could not simply be prompted away.
 | 11 | No 7th intent added. "Tell me about X" is `factual_lookup` with a different response shape | `wants_detail()` branches on the **user's own words** (a named title + no attribute word), not on `refined_query` — which is model-written and had rewritten "tell me about Inception" into "who directed Inception", silently narrowing the request | Day 5 `final_response`, taxonomy unchanged at six intents |
 | 12 | `refined_query` was **answering** questions instead of restating them ("what is Inception about" → "Inception is a film about a thief who enters dreams") — an ungrounded answer from model memory, sitting in state before retrieval ran | Intent prompt now forbids two things explicitly: never answer the question, never narrow the request | §3.4 prompt |
 | 13 | Titles that are also ordinary words (**Inception**, Alien, Up, Her, Heat) classified as `general` about 3 times in 4 — the model read "inception" as the noun | `general` is now defined as *only* about the conversation or the assistant: any message naming a film, person or genre can never be `general`. Stable 4/4 after the change, with `hi`/`thanks` unaffected | §3.4 prompt |
+
+**Day 7 build — found by the eval on its first run (25/28), all fixed to 28/28:**
+
+| # | Finding | Resolution | Sections changed |
+|---|---|---|---|
+| 14 | "Who is the president of France" classified `factual_lookup`. The prompt defined it as "asks a specific answerable fact" — never saying *about a film* | `factual_lookup` now requires a FILM subject, and the prompt says explicitly to check the question's **subject, not its shape**: "who is the president of France" and "who directed Whiplash" are the same shape, different subjects. 3/3 after | §3.4 prompt |
+| 15 | "Something like a Tarantino film" routed `vector` though `entities.people` held him — the decision table was being read as applying only to *hard* constraints | Table now states a SOFT mention counts for question A, and that naming someone as a style reference counts for B, with four worked examples | §2.2 / §3.4 prompt |
+| 16 | "Only the 90s ones" (with history) classified `recommend`, not `follow_up` — though `refined_query` fused correctly | `follow_up` redefined mechanically: *if resolving the message required reading the history, it is follow_up* — even when what it asks for is a recommendation | §3.4 prompt |
+| 17 | **The eval's own label was wrong**: "mind-bending sci-fi like Inception" was asserted to *cite* Inception. It correctly cited *The Prestige, Dark City, The Matrix, Primer* instead — recommending the reference film back is a worse answer | Split the criterion: `must_include` (the answer cites it) vs `must_retrieve` (retrieval surfaces it). A reference film belongs in the second | `eval/dataset.py`, `eval/run_eval.py` |
+
+> Worth recording *why* #17 was fixed in the eval rather than the agent: the agent's behaviour was
+> right and the label was testing the wrong property. The discipline is that a failing case must be
+> diagnosed before it is changed — an eval edited to go green is worse than no eval. #14–#16 were
+> genuine system faults and were fixed in the prompt, not the labels.

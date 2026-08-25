@@ -70,3 +70,38 @@ uv run pytest -q     # store tests skip cleanly when Docker is down
 
 - Qdrant: <http://localhost:6333/dashboard>
 - Neo4j Browser: <http://localhost:7474> (user `neo4j`, password from `.env`)
+
+## Serving it (Day 7)
+
+```bash
+uv run uvicorn server.main:app --reload      # http://127.0.0.1:8000
+open http://127.0.0.1:8000/docs              # interactive OpenAPI
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"gritty crime dramas starring Denzel Washington"}' | python3 -m json.tool
+
+curl -s http://127.0.0.1:8000/api/v1/health | python3 -m json.tool
+```
+
+The response carries `sources[]` with `poster_path`, `backdrop_path` and `overview`, so a card
+renders with image + blurb from one call. `degraded: true` means a store was unreachable — an
+empty `sources` list means something different depending on that flag.
+
+Multi-turn is client-driven (the server is stateless, contract §1): send prior turns back as
+`history`.
+
+## Evaluation
+
+```bash
+uv run python -m eval.dataset          # what the dataset covers
+uv run python -m eval.run_eval         # run it, exits non-zero on failure
+uv run python -m eval.run_eval --filter "Denzel"
+uv run python -m eval.run_eval --upload    # push examples to LangSmith
+```
+
+28 labelled cases, 8 deterministic criteria — intent, routing, grounding, expected titles,
+retrieved references, no-citations, asks-a-question, plot-grounding. No LLM judges: an
+LLM-graded eval drifts with the judge and cannot gate a regression.

@@ -20,6 +20,9 @@ dependencies = [
     # Day 3: the agent state machine + tracing.
     "langgraph>=0.2.45",
     "langsmith>=0.1.140",
+    # Day 7: serve it over HTTP.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [dependency-groups]

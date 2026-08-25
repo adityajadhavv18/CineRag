@@ -62,14 +62,26 @@ retrieve for them. Return ONLY the structured object.
 ## intent — what kind of message is this?
 
 - `recommend`       wants movie suggestions. "something tense", "good sci-fi like Arrival"
-- `factual_lookup`  asks a specific answerable fact. "who directed Whiplash", "what year was Alien"
-- `follow_up`       refines or references the immediately previous turn. "only the 90s ones",
-                    "what about her other films", "more like the second one"
+- `factual_lookup`  asks a specific answerable fact ABOUT A FILM OR A FILM-INDUSTRY PERSON.
+                    "who directed Whiplash", "what year was Alien", "tell me about Parasite".
+                    A factual question about anything else — politics, science, sport, history —
+                    is `off_topic`, however answerable it is. The test is the SUBJECT, not
+                    whether a fact was requested.
+- `follow_up`       cannot be understood without the previous turn. If resolving the message
+                    required you to read the conversation history, it is `follow_up` — even when
+                    what it ultimately asks for is a recommendation.
+                    "only the 90s ones", "what about her other films", "more like the second one"
 - `clarification`   on-topic but too vague to retrieve well. "recommend some movies",
                     "I want something good"
 - `general`         greetings, small talk, or questions about the assistant itself.
                     "hi", "what can you do", "who are you", "thanks"
-- `off_topic`       not about movies at all. "what's the weather", "write me a python script"
+- `off_topic`       not about movies at all. "what's the weather", "write me a python script",
+                    "who is the president of France", "who won the World Cup", "what is 2+2".
+
+BEFORE choosing `factual_lookup`, check the SUBJECT of the question, not its shape. "Who is the
+president of France" and "who directed Whiplash" have the same shape and different subjects; only
+the second is about film. If the message names no film and no film-industry person, and is asking
+about the world rather than about cinema, it is `off_topic` — no matter how answerable it is.
 
 `general` is ONLY about the conversation or the assistant. If the message names a film, a
 person, a genre, or asks for anything about films, it is NEVER `general` — pick one of the
@@ -96,8 +108,12 @@ questions below and read the answer off the table. Synonymous phrasings ("with X
 "featuring X", "that has X in it") MUST all produce the same lead_engine.
 
   A. Did you put any person or title in filters.people / entities.people / entities.titles?
+     A SOFT mention counts. "Like a Tarantino film" puts him in entities.people, so A = yes —
+     his filmography is a real reference point the graph can traverse.
   B. Does the request also describe a mood, theme, tone, subject or style
      ("gritty", "cozy", "mind-bending", "about grief", "feel-good")?
+     Naming someone as a STYLE reference counts as B = yes: "like a Tarantino film" is asking
+     for a feel, not for his filmography.
 
      A = no,  B = yes  ->  vector
      A = yes, B = no   ->  graph
@@ -106,6 +122,12 @@ questions below and read the answer off the table. Synonymous phrasings ("with X
 
 A pure attribute filter with no names and no vibe ("horror rated above 8 from the 90s") is
 `vector`: payload filters do the work and there is nothing for the graph to traverse.
+
+Worked examples:
+    "something like a Tarantino film"        A=yes (soft) B=yes (style) -> both
+    "gritty crime dramas with Denzel"        A=yes (hard) B=yes         -> both
+    "crime dramas that have Denzel in them"  A=yes (hard) B=no          -> graph
+    "something tense and claustrophobic"     A=no         B=yes         -> vector
 
 For `general` and `off_topic`, no retrieval happens; use `vector` as an inert default.
 

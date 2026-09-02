@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+
+/* The palette. A streaming UI is mostly black by design — posters are the only
+   colour on the page, so every surface behind them is a shade of near-black and
+   the single accent is reserved for things that are actually actions. */
+@theme {
+  --color-ink: #0b0b0f; /* page ground */
+  --color-surface: #141418; /* cards, drawer, modal */
+  --color-surface-2: #1f1f24; /* raised: hover card, inputs */
+  --color-hairline: #2a2a30;
+  --color-brand: #e50914;
+  --color-brand-dim: #b20710;
+
+  --text-primary: #f5f5f7;
+  --text-muted: #a1a1aa;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Rows scroll horizontally but must never show a scrollbar — the arrow buttons
+   are the affordance, and a visible bar under every row would be six of them. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Used behind the hero title and along the bottom of the banner. Two stops
+   would band visibly across a 600px fade, so these are eased. */
+.scrim-bottom {
+  background: linear-gradient(
+    to top,
+    var(--color-ink) 0%,
+    rgba(11, 11, 15, 0.85) 12%,
+    rgba(11, 11, 15, 0.45) 30%,
+    rgba(11, 11, 15, 0) 60%
+  );
+}
+.scrim-left {
+  background: linear-gradient(
+    to right,
+    rgba(11, 11, 15, 0.92) 0%,
+    rgba(11, 11, 15, 0.6) 35%,
+    rgba(11, 11, 15, 0) 70%
+  );
+}
+
+/* Hero copy entering with each carousel slide. */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The detail overlay rising into place. */
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

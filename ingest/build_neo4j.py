@@ -106,14 +106,22 @@ PASSES: list[tuple[str, str]] = [
         # The character name lives on the RELATIONSHIP, not the Person — the same
         # actor plays different characters in different films. This is the thing
         # a relational schema makes awkward and a graph makes obvious.
+        #
+        # `billing` is the cast list's own index. TMDB returns cast top-billed
+        # first and the snapshot preserves that order, but a graph has no
+        # inherent order, so without capturing the index here the ordering is
+        # lost the moment it is written and a cast list renders in whatever
+        # order Neo4j happens to return. UNWINDing over range() rather than over
+        # the list is what makes the index available.
         """
         UNWIND $rows AS row
         MATCH (m:Movie {tmdb_id: row.tmdb_id})
-        UNWIND row.cast AS c
+        UNWIND range(0, size(row.cast) - 1) AS i
+        WITH m, i, row.cast[i] AS c
         MERGE (p:Person {person_id: c.tmdb_person_id})
         SET p.name = c.name, p.name_normalized = c.name_normalized
         MERGE (p)-[r:ACTED_IN]->(m)
-        SET r.character = c.character
+        SET r.character = c.character, r.billing = i
         """,
     ),
     (

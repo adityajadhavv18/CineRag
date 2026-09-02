@@ -195,6 +195,93 @@ def search_movies(
     )
 
 
+# ── browse-surface queries (contract §9 frontend) ─────────────────────────────
+#
+# These serve the browse UI, not the agent. They are here rather than in a new
+# module because they are the same kind of thing the rest of this file does —
+# named Cypher returning plain dicts — and splitting by *caller* rather than by
+# *store* would leave two thin wrappers over one driver.
+
+# Everything a detail modal renders. Pattern comprehensions do one hop out from
+# the film in a single round trip; cast ordering is fixed up in Python because
+# Cypher cannot ORDER BY inside a comprehension.
+DETAIL_FIELDS = """
+    m.tmdb_id AS tmdb_id, m.title AS title, m.year AS year,
+    m.overview AS overview, m.tagline AS tagline,
+    m.rating AS rating, m.popularity AS popularity,
+    m.runtime AS runtime, m.release_date AS release_date,
+    m.poster_path AS poster_path, m.backdrop_path AS backdrop_path,
+    [(m)-[:HAS_GENRE]->(g:Genre)   | g.name]        AS genres,
+    [(m)-[:HAS_KEYWORD]->(k:Keyword) | k.name]      AS keywords,
+    [(d:Person)-[:DIRECTED]->(m)
+        | {person_id: d.person_id, name: d.name}]   AS directors,
+    [(a:Person)-[r:ACTED_IN]->(m)
+        | {person_id: a.person_id, name: a.name,
+           character: r.character, billing: r.billing}] AS cast,
+    head([(m)-[:PART_OF]->(c:Collection) | c.id])   AS collection_id,
+    head([(m)-[:PART_OF]->(c:Collection) | c.name]) AS collection_name
+"""
+
+
+def movie_detail(tmdb_id: int) -> dict | None:
+    """One film with its full credits. Returns None when the id is unknown.
+
+    Neo4j alone answers this — the Movie node carries overview, tagline, runtime
+    and release_date, so there is no reason to also round-trip Qdrant for payload
+    the graph already holds.
+    """
+    rows = _query(f"MATCH (m:Movie {{tmdb_id: $tmdb_id}}) RETURN {DETAIL_FIELDS}", tmdb_id=tmdb_id)
+    if not rows:
+        return None
+
+    detail = rows[0]
+    # Billing order is the order TMDB credits the cast in — top-billed first,
+    # which is the only order a cast list should ever be shown in. It is written
+    # onto the ACTED_IN edge by ingest; `coalesce` keeps this query working
+    # against a graph built before that property existed, at the cost of an
+    # arbitrary order until it is rebuilt.
+    detail["cast"] = sorted(detail.get("cast") or [], key=lambda c: c.get("billing") or 0)
+    detail["keywords"] = (detail.get("keywords") or [])[:12]
+    return detail
+
+
+def person_profile(person_id: int) -> dict | None:
+    """A person's filmography, keyed on person_id — never on name.
+
+    Contract §11 decision #1 made Person unique on `person_id` precisely because
+    48 people in this catalogue share a name with someone else. Looking a person
+    up by name here would hand that bug straight back to the UI, so the browse
+    API addresses people by id and treats the name as display text.
+    """
+    rows = _query(
+        """
+        MATCH (p:Person {person_id: $person_id})
+        RETURN p.person_id AS person_id, p.name AS name,
+               [(p)-[r:ACTED_IN]->(m:Movie)
+                   | {tmdb_id: m.tmdb_id, title: m.title, year: m.year,
+                      rating: m.rating, popularity: m.popularity,
+                      poster_path: m.poster_path, backdrop_path: m.backdrop_path,
+                      character: r.character}]              AS acted,
+               [(p)-[:DIRECTED]->(m:Movie)
+                   | {tmdb_id: m.tmdb_id, title: m.title, year: m.year,
+                      rating: m.rating, popularity: m.popularity,
+                      poster_path: m.poster_path, backdrop_path: m.backdrop_path}] AS directed
+        """,
+        person_id=person_id,
+    )
+    if not rows:
+        return None
+
+    profile = rows[0]
+    # Most-popular-first: this renders as a poster row, and a browse row leads
+    # with the film the viewer is most likely to recognise.
+    for key in ("acted", "directed"):
+        profile[key] = sorted(
+            profile.get(key) or [], key=lambda m: m.get("popularity") or 0, reverse=True
+        )
+    return profile
+
+
 def people_who_share_a_name(limit: int = 10) -> list[dict]:
     """Diagnostic for contract §3.3: names owned by more than one real person.
 

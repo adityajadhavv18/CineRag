@@ -93,6 +93,58 @@ empty `sources` list means something different depending on that flag.
 Multi-turn is client-driven (the server is stateless, contract §1): send prior turns back as
 `history`.
 
+### The browse endpoints
+
+`/chat` answers a question. The browse page has to render before anyone has asked one, and a
+detail modal needs credits the agent never carries — so there is a second, read-only surface
+with no LLM, no intent routing and no embedding of user text.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/browse?rows=6" | python3 -m json.tool   # carousel + genre rows
+curl -s http://127.0.0.1:8000/api/v1/movie/671         | python3 -m json.tool # detail + credits
+curl -s http://127.0.0.1:8000/api/v1/movie/671/similar | python3 -m json.tool # neighbours + franchise
+curl -s http://127.0.0.1:8000/api/v1/person/10980      | python3 -m json.tool # filmography
+```
+
+Three things worth knowing:
+
+- `/similar` returns **two different kinds of related**, kept apart on purpose. `films` are
+  Qdrant neighbours of the film's own stored vector — what *feels* like it. `franchise` is the
+  graph's exact answer — what *belongs* with it. Conflating a vibe with a fact is what the
+  two-store split exists to avoid.
+- People are addressed by `person_id`, never by name (contract §11 #1): 48 people in this
+  catalogue share a name with someone else.
+- Browse rows apply a 6.0 rating floor and pick heroes by rating within each row's popular head.
+  TMDB popularity spikes around release, so raw popularity fills the page with unreleased titles
+  carrying a handful of votes. The agent applies no such floor — ask for a bad film by name and
+  you get it.
+
+## The frontend
+
+A Netflix-shaped browse page over the same two stores, in `frontend/` — React + Vite + Tailwind.
+
+```bash
+cd frontend
+npm install
+npm run dev            # http://localhost:5173, expects the API on :8000
+```
+
+Point it elsewhere with `VITE_API_URL` in `frontend/.env.local`.
+
+The page is a hero carousel and genre rows until you ask something; then the shelf becomes the
+answer. Three details that are easy to get wrong:
+
+- **The client owns the conversation.** The server is stateless, so `App` holds every turn and
+  replays it. That is the only reason "only the 90s ones" resolves.
+- **An empty `sources` list is often correct.** On `clarification`, `general` and `off_topic` the
+  agent is asking a question or making small talk. The rows are left alone and no "nothing found"
+  message appears — saying one would be a lie about what happened.
+- **`[1]` markers are live.** They index 1-based into `sources` and render as controls that
+  scroll to and ring the card they cite.
+
+Images come from TMDB's CDN, built client-side from the paths the API returns; this backend never
+stores or serves image bytes (contract §9).
+
 ## Evaluation
 
 ```bash

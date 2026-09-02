@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.config import configure_langsmith, settings
 from core.logger import get_logger
 from server.routes import router
+from server.routes_catalog import router as catalog_router
 
 log = get_logger("server")
 
@@ -87,11 +88,19 @@ app.add_middleware(
 )
 
 app.include_router(router)
+# The browse surface (contract §9). Separate router because it shares nothing
+# with the agent but the prefix: no LLM, no intent, just reads off the stores.
+app.include_router(catalog_router)
 
 
 @app.get("/")
 def root() -> dict:
-    return {"service": "CineRAG", "docs": "/docs", "chat": "POST /api/v1/chat"}
+    return {
+        "service": "CineRAG",
+        "docs": "/docs",
+        "chat": "POST /api/v1/chat",
+        "browse": "GET /api/v1/browse",
+    }
 
 
 def main() -> None:

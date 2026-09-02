@@ -84,6 +84,31 @@ def search(
     return results
 
 
+def similar_to(tmdb_id: int, limit: int = 12) -> list[dict]:
+    """Nearest neighbours of a film's OWN stored vector — the "More Like This" row.
+
+    Note there is no `embed_query` call and no text: passing a point id as the
+    query makes Qdrant search from the vector it already holds. That costs no
+    OpenAI call and, more importantly, compares like with like — searching by the
+    film's overview text would embed a *description of* the film rather than
+    reusing the embedding the whole catalogue was indexed with (contract §3.2).
+
+    Qdrant does not exclude the query point itself, so it is filtered out here;
+    otherwise every row would open with the film you are already looking at.
+    """
+    hits = get_client().query_points(
+        collection_name=settings.qdrant_collection,
+        query=tmdb_id,
+        limit=limit,
+        query_filter=models.Filter(must_not=[models.HasIdCondition(has_id=[tmdb_id])]),
+        with_payload=True,
+    ).points
+
+    results = [{**(h.payload or {}), "score": h.score} for h in hits]
+    log.info("vector_similar", tmdb_id=tmdb_id, returned=len(results))
+    return results
+
+
 def get_by_ids(tmdb_ids: list[int]) -> list[dict]:
     """Fetch payloads for known movies without searching — used by rerank/enrich."""
     records = get_client().retrieve(

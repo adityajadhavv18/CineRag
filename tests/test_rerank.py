@@ -154,6 +154,31 @@ def test_repeated_citations_are_reported_once():
     assert len(citations) == 1
 
 
+def test_markers_are_renumbered_to_match_the_source_list():
+    """Contract §9: "[k]" must be the k-th source, or the frontend cannot turn a
+    marker into a link. The model numbers by candidate position, so an answer
+    citing rows 2 and 4 of the block ships two sources and must read [1], [2]."""
+    rows = [_row(10, 1, title="A"), _row(20, 2, title="B"), _row(30, 3, title="C"),
+            _row(40, 4, title="D")]
+
+    text, citations, _ = validate_citations("Try B [2], then D [4].", rows)
+
+    assert text == "Try B [1], then D [2]."
+    assert [c["n"] for c in citations] == [1, 2]
+    assert [c["title"] for c in citations] == ["B", "D"]
+
+
+def test_renumbering_does_not_rewrite_a_marker_twice():
+    """A naive replace loop maps 3->1, then rewrites that same 1 to 2 on the next
+    pass. The result looks plausible and points at the wrong film."""
+    rows = [_row(10, 1, title="A"), _row(20, 2, title="B"), _row(30, 3, title="C")]
+
+    text, citations, _ = validate_citations("C [3] beats A [1].", rows)
+
+    assert text == "C [1] beats A [2]."
+    assert [c["title"] for c in citations] == ["C", "A"]
+
+
 def test_citations_carry_the_poster_paths_the_frontend_needs():
     """Contract §9: each cited film ships poster/backdrop for the card UI."""
     rows = [_row(10, 1, title="A", poster_path="/p.jpg", backdrop_path="/b.jpg")]

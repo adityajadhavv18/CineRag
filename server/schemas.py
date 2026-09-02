@@ -95,3 +95,95 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     stores: dict[str, bool]
     catalogue_size: int | None = None
+
+
+# ── browse surface (contract §9) ──────────────────────────────────────────────
+#
+# The chat endpoint answers questions; these answer "what is on the shelf". A
+# browse page has to render before anyone has asked anything, and a detail modal
+# needs credits the agent never carries, so neither can be served by /chat.
+# Same rule as above throughout: PATHS, never URLs, never bytes.
+
+
+class MovieCard(BaseModel):
+    """One poster tile. Deliberately small — a row renders 20 of these."""
+
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    rating: float | None = None
+    poster_path: str | None = None
+    backdrop_path: str | None = None
+    # The hover preview shows a blurb and genre tags before anything is clicked.
+    # Both come back inside the same store query the row already ran, so carrying
+    # them costs nothing here and saves a request per hovered card.
+    overview: str | None = None
+    genres: list[str] = Field(default_factory=list)
+    # Only on a person's acting credits: what they played in that film.
+    character: str | None = None
+
+
+class BrowseRow(BaseModel):
+    title: str
+    genre: str | None = None
+    films: list[MovieCard] = Field(default_factory=list)
+
+
+class BrowseResponse(BaseModel):
+    # A carousel, not a single banner. Every film here is guaranteed to have a
+    # backdrop — a 2:3 poster stretched across a 16:9 hero letterboxes, so a film
+    # without one cannot be a hero at all.
+    heroes: list[MovieCard] = Field(default_factory=list)
+    rows: list[BrowseRow] = Field(default_factory=list)
+    # Same contract as ChatResponse.degraded: empty `rows` with degraded=False
+    # means the catalogue really is empty; with degraded=True it means the graph
+    # was unreachable. The UI must not show "no films" for the second case.
+    degraded: bool = False
+
+
+class Credit(BaseModel):
+    """A person on a film. `person_id` is the address — see contract §11 #1."""
+
+    person_id: int
+    name: str
+    character: str | None = None
+
+
+class MovieDetail(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    overview: str | None = None
+    tagline: str | None = None
+    rating: float | None = None
+    runtime: int | None = None
+    release_date: str | None = None
+    poster_path: str | None = None
+    backdrop_path: str | None = None
+    genres: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    cast: list[Credit] = Field(default_factory=list)
+    directors: list[Credit] = Field(default_factory=list)
+    collection_id: int | None = None
+    collection_name: str | None = None
+
+
+class SimilarResponse(BaseModel):
+    """Two different kinds of "related", kept separate on purpose.
+
+    `films` are vector neighbours — films that *feel* like this one. `franchise`
+    is the graph's exact answer — the films that literally belong with it. The UI
+    renders them as separate rows because conflating a vibe with a fact is the
+    thing this whole architecture exists to avoid (contract §2.1).
+    """
+
+    films: list[MovieCard] = Field(default_factory=list)
+    franchise: FranchiseTimeline | None = None
+    degraded: bool = False
+
+
+class PersonResponse(BaseModel):
+    person_id: int
+    name: str
+    acted: list[MovieCard] = Field(default_factory=list)
+    directed: list[MovieCard] = Field(default_factory=list)

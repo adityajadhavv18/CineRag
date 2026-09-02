@@ -171,6 +171,15 @@ def validate_citations(text: str, rows: list[dict]) -> tuple[str, list[dict]]:
         the model invented a reference, so the marker is removed from the text.
       - a film in the block the answer never mentioned: it simply does not appear
         in `citations`, so the API never reports a source the user was not shown.
+
+    The surviving markers are then RENUMBERED. The model cites films by their
+    position in the candidate block it was shown — up to 15 rows — but a caller
+    only ever receives the handful that were actually cited. Left alone, an
+    answer citing candidates 2, 5 and 6 ships three sources numbered 1, 2, 3 and
+    a body reading "[2] ... [5] ... [6]", so "[5]" points at nothing and the
+    third source is never referenced. Renumbering closes that gap: after this,
+    "[k]" is always the k-th entry of `citations`, which is what §9 promises the
+    frontend and the only thing that makes a marker clickable.
     """
     used: list[int] = []
     invalid: list[int] = []
@@ -183,13 +192,22 @@ def validate_citations(text: str, rows: list[dict]) -> tuple[str, list[dict]]:
         elif n not in invalid:
             invalid.append(n)
 
-    cleaned = text
-    for n in invalid:
-        cleaned = cleaned.replace(f"[{n}]", "")
+    # Candidate index -> position in `citations`, assigned in order of first
+    # mention so the numbering follows the reading order of the answer.
+    renumbered = {n: i for i, n in enumerate(used, start=1)}
+
+    # One pass, not a loop of str.replace: rewriting in place would let an
+    # already-renumbered marker be rewritten again by a later mapping (6 -> 1
+    # then 1 -> 4), which silently corrupts the very links this exists to fix.
+    def rewrite(match: re.Match[str]) -> str:
+        n = int(match.group(1))
+        return f"[{renumbered[n]}]" if n in renumbered else ""
+
+    cleaned = CITATION_PATTERN.sub(rewrite, text)
 
     citations = [
         {
-            "n": n,
+            "n": renumbered[n],
             "tmdb_id": rows[n - 1]["tmdb_id"],
             "title": rows[n - 1]["title"],
             "year": rows[n - 1].get("year"),

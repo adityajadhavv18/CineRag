@@ -23,6 +23,16 @@ body,
   height: 100%;
 }
 
+/* How much room the chat panel is taking on the right, published by
+   <ChatDrawer> and reserved by the page rather than overlapped.
+   The panel is still a fixed overlay — this is what keeps the things it used to
+   cover reachable: a row's right-hand arrow, the right-hand end of every shelf,
+   a card a citation just scrolled to, and the hover preview's clamp. Zero
+   whenever the panel is shut, and on mobile where it covers the page anyway. */
+:root {
+  --chat-inset: 0px;
+}
+
 body {
   margin: 0;
   background: var(--color-ink);
@@ -39,6 +49,15 @@ body {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* A row in motion stops its tiles accepting the pointer, and picks it back up
+   once the row settles. Without this, scrolling a shelf drags card after card
+   under a stationary cursor, each firing the hover that mounts a preview panel
+   the next scroll event immediately dismisses. The flag is set by <Row> as a
+   DOM attribute so that starting to scroll does not re-render the tiles. */
+[data-scrolling='true'] > * {
+  pointer-events: none;
 }
 
 /* Used behind the hero title and along the bottom of the banner. Two stops

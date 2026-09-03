@@ -12,13 +12,32 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as api from './lib/api'
-import type { BrowseResponse, ChatResponse, MovieCard as Card, Turn } from './types'
+import type { BrowseResponse, ChatResponse, MovieCard as Card, Source, Turn } from './types'
 import ChatDrawer, { type ChatMessage } from './components/ChatDrawer'
 import DetailModal from './components/DetailModal'
 import Hero from './components/Hero'
 import NavBar from './components/NavBar'
 import Row from './components/Row'
 import { RowSkeleton } from './components/Skeletons'
+
+/**
+ * A ChatResponse before the answer has finished arriving.
+ *
+ * It exists because a streaming turn has a real `sources` array — populated as
+ * citations land — long before it has an intent or a trace. Without a base to
+ * spread over, every chip in the panel would need a null check for a state that
+ * lasts two seconds.
+ */
+const EMPTY_ANSWER: ChatResponse = {
+  response: '',
+  intent: null,
+  lead_engine: null,
+  sources: [],
+  franchise: [],
+  clarification: null,
+  degraded: false,
+  trace: [],
+}
 
 export default function App() {
   const [shelf, setShelf] = useState<BrowseResponse | null>(null)
@@ -28,6 +47,8 @@ export default function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pending, setPending] = useState(false)
+  /** What the agent is busy with right now, in words. Null once text starts. */
+  const [stage, setStage] = useState<string | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
   /** The last answer that actually produced films; what the shelf now shows. */
   const [results, setResults] = useState<ChatResponse | null>(null)
@@ -60,28 +81,89 @@ export default function App() {
       // optimistic append is what keeps the new question out of its own context.
       const history: Turn[] = messages.map(({ role, content }) => ({ role, content }))
 
-      setMessages((m) => [...m, { role: 'user', content: text }])
+      // Two turns go in now: the question, and an EMPTY answer for the stream to
+      // fill. Everything below edits that last message in place rather than
+      // appending, which is the whole difference between this and a batch call.
+      setMessages((m) => [...m, { role: 'user', content: text }, { role: 'assistant', content: '' }])
       setPending(true)
+      setStage(null)
       setChatError(null)
 
-      try {
-        const answer = await api.ask(text, history)
-        setMessages((m) => [...m, { role: 'assistant', content: answer.response, response: answer }])
+      /** Rewrite the streaming turn — always the last one in the list. */
+      const edit = (change: (turn: ChatMessage) => ChatMessage) =>
+        setMessages((m) => [...m.slice(0, -1), change(m[m.length - 1])])
 
-        // Only an answer with films replaces the shelf. A clarification or a
-        // "hi" must leave the page alone — wiping the rows because the agent
-        // asked a question would punish the user for being asked one.
-        if (answer.sources.length > 0) {
-          setResults(answer)
-          window.scrollTo({ top: 0, behavior: 'smooth' })
+      // Sources are accumulated HERE, not read back out of `messages`, so that
+      // `done` can assemble the finished answer without a state updater having
+      // to do anything but return a value.
+      const sources: Source[] = []
+      let answered = false
+
+      try {
+        for await (const event of api.askStream(text, history)) {
+          switch (event.type) {
+            case 'stage':
+              setStage(event.label)
+              break
+
+            case 'token':
+              answered = true
+              setStage(null)
+              edit((turn) => ({ ...turn, content: turn.content + event.text }))
+              break
+
+            case 'source': {
+              // Markers are 1-based into `sources`, and the server sends each
+              // film with the marker that cites it, so appending in arrival
+              // order is what keeps "[2]" pointing at the second source.
+              sources.push(event.source)
+              const known = [...sources]
+              edit((turn) => ({
+                ...turn,
+                response: { ...EMPTY_ANSWER, ...turn.response, sources: known },
+              }))
+              break
+            }
+
+            case 'done': {
+              const answer: ChatResponse = { ...EMPTY_ANSWER, ...event.result, sources }
+              // `content` becomes the server's text rather than the tokens we
+              // concatenated. They are identical — but this is the copy that
+              // gets replayed to the agent next turn, and history is not the
+              // place to trust something we assembled ourselves.
+              edit((turn) => ({
+                ...turn,
+                content: answer.response || turn.content,
+                response: answer,
+              }))
+
+              // The shelf changes ONCE, here, rather than growing a poster at a
+              // time — the page sits behind a panel the user is reading, and
+              // cards appearing under it would move the text mid-sentence.
+              //
+              // Only an answer with films replaces it. A clarification or a "hi"
+              // must leave the page alone: wiping the rows because the agent
+              // asked a question would punish the user for being asked one.
+              if (sources.length > 0) {
+                setResults(answer)
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+              }
+              break
+            }
+
+            case 'error':
+              throw new Error(event.detail)
+          }
         }
       } catch {
         setChatError('That question could not be answered right now. Try again?')
-        // Drop the optimistic user turn: leaving it would put a message in the
-        // replayed history that the agent never actually saw.
-        setMessages((m) => m.slice(0, -1))
+        // Drop both optimistic turns, but only if nothing was ever said. A
+        // half-written answer is kept: it is what the user watched arrive, and
+        // deleting it under them is worse than an incomplete reply.
+        if (!answered) setMessages((m) => m.slice(0, -2))
       } finally {
         setPending(false)
+        setStage(null)
       }
     },
     [messages],
@@ -130,7 +212,11 @@ export default function App() {
   const heroes = resultRows?.films.filter((f) => f.backdrop_path) ?? shelf?.heroes ?? []
 
   return (
-    <div className="min-h-full bg-ink pb-20">
+    // The page narrows to make room for the chat panel instead of running
+    // underneath it — see `--chat-inset` in index.css. Everything that was
+    // unreachable while the panel was open (the right-hand arrows, the end of
+    // each shelf, a cited card) follows from this one property.
+    <div className="min-h-full bg-ink pb-20 pr-[var(--chat-inset)]">
       <NavBar onAsk={() => setChatOpen(true)} degraded={shelf?.degraded || results?.degraded} />
 
       {error ? (
@@ -212,6 +298,7 @@ export default function App() {
         onClose={() => setChatOpen(false)}
         messages={messages}
         pending={pending}
+        stage={stage}
         error={chatError}
         onSend={send}
         onReset={reset}
@@ -241,7 +328,7 @@ function ApiDown({ message }: { message: string }) {
   return (
     <div className="grid min-h-screen place-items-center px-6 text-center">
       <div className="max-w-md space-y-3">
-        <h1 className="text-2xl font-bold">CineRAG cannot reach its backend</h1>
+        <h1 className="text-2xl font-bold">Netflix cannot reach its backend</h1>
         <p className="text-sm text-[color:var(--text-muted)]">{message}</p>
         <pre className="overflow-x-auto rounded-lg bg-surface p-4 text-left text-xs text-white/70">
           {`docker compose up -d

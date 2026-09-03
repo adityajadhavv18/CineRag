@@ -34,6 +34,12 @@ const EXIT_MS = 180
 const PREVIEW_WIDTH = 340
 const VIEWPORT_MARGIN = 12
 
+/** Room the chat panel is taking on the right, if it is open. Read from the DOM
+ *  because the preview is positioned in viewport coordinates, where the page's
+ *  own inset does not apply — see `--chat-inset` in index.css. */
+const chatInset = () =>
+  parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--chat-inset')) || 0
+
 interface Anchor {
   left: number
   top: number
@@ -110,10 +116,17 @@ export default function MovieCard({ film, onOpen, isSeed, citation, highlighted 
       if (!box) return
       // Centre on the card, then clamp so a card at either end of a row opens a
       // preview that is fully on screen rather than half past the edge.
+      //
+      // "On screen" stops at the chat panel, not at the window: a preview
+      // centred on a card near the page's right edge would otherwise grow out
+      // underneath the panel. Clamped to the right first and floored at the
+      // margin second, so a page narrower than the preview loses the right
+      // side of it rather than the left, where the artwork is.
       const centred = box.left + box.width / 2 - PREVIEW_WIDTH / 2
-      const left = Math.min(
-        Math.max(centred, VIEWPORT_MARGIN),
-        window.innerWidth - PREVIEW_WIDTH - VIEWPORT_MARGIN,
+      const usableRight = window.innerWidth - chatInset()
+      const left = Math.max(
+        VIEWPORT_MARGIN,
+        Math.min(centred, usableRight - PREVIEW_WIDTH - VIEWPORT_MARGIN),
       )
       setAnchor({ left, top: box.top - 28, originX: box.left + box.width / 2 - left })
       // Two frames, not one. A single rAF still lands in the same paint as the

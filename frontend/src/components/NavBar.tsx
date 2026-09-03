@@ -31,11 +31,19 @@ export default function NavBar({ onAsk, degraded }: Props) {
 
   return (
     <nav
-      className={`fixed inset-x-0 top-0 z-30 flex items-center gap-6 px-4 py-3 transition-colors duration-300 md:px-12 ${
+      // Fixed, so the page's own inset does not apply to it — it has to stop at
+      // the chat panel's edge itself, or the "Ask" button ends up underneath
+      // the panel it opens.
+      className={`fixed left-0 right-[var(--chat-inset)] top-0 z-30 flex items-center gap-6 px-4 py-3 transition-colors duration-300 md:px-12 ${
         scrolled ? 'bg-ink/95 backdrop-blur' : 'bg-gradient-to-b from-black/80 to-transparent'
       }`}
     >
-      <span className="select-none text-2xl font-black tracking-tight text-brand">CINERAG</span>
+      {/* Tighter tracking and a slight vertical squeeze — the wordmark in the
+          reference is condensed, and plain bold at default tracking reads as a
+          different logo sitting in the same spot. */}
+      <span className="select-none text-[26px] font-bold leading-none tracking-[-0.055em] text-brand">
+        NETFLIX
+      </span>
 
       <ul className="hidden items-center gap-5 text-sm text-white/80 md:flex">
         {LINKS.map((link, i) => (

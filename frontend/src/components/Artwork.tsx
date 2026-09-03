@@ -58,6 +58,13 @@ export default function Artwork({
       alt=""
       loading={eager ? 'eager' : 'lazy'}
       fetchPriority={eager ? 'high' : 'auto'}
+      // A lazy image in a horizontal shelf arrives mid-scroll, so its decode
+      // lands in the middle of a gesture. `async` keeps that off the main
+      // thread; synchronous decoding of a w780 still is a dropped frame.
+      decoding="async"
+      // Otherwise dragging a row by its artwork starts a native image drag,
+      // ghost and all, instead of moving the row.
+      draggable={false}
       onError={() => setFailed(true)}
       className={className}
     />

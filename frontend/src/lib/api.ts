@@ -9,10 +9,12 @@
 
 import type {
   BrowseResponse,
+  ChatEvent,
   ChatResponse,
   MovieDetail,
   PersonResponse,
   SimilarResponse,
+  StreamedSource,
   Turn,
 } from '../types'
 
@@ -87,4 +89,103 @@ export async function ask(
     throw new ApiError(response.status, detail || `Chat failed (${response.status})`)
   }
   return response.json() as Promise<ChatResponse>
+}
+
+/**
+ * The same turn, read as it happens.
+ *
+ * Not `EventSource`, which is the browser's built-in SSE client: it only makes
+ * GET requests, and a turn is a message plus up to 20 replayed turns — a body.
+ * So the stream is read by hand, which costs about twenty lines and keeps the
+ * `AbortSignal` wiring every other call in this file already uses.
+ */
+export async function* askStream(
+  message: string,
+  history: Turn[],
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEvent> {
+  const response = await fetch(`${BASE}/api/v1/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ message, history: history.slice(-MAX_HISTORY_TURNS) }),
+    signal,
+  })
+
+  // A rejected request still fails normally — validation happens before the
+  // first frame, so there is a real status code to report here.
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new ApiError(response.status, detail || `Chat failed (${response.status})`)
+  }
+  if (!response.body) throw new ApiError(response.status, 'This browser cannot stream.')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      // `stream: true` matters: a multi-byte character (an em dash, an accent)
+      // can be split across two network chunks, and decoding each chunk
+      // independently would render the halves as garbage.
+      buffer += decoder.decode(value, { stream: true })
+
+      // A blank line closes a message. Everything after the last one is a
+      // half-arrived message and waits for the next chunk.
+      for (;;) {
+        const end = buffer.indexOf('\n\n')
+        if (end === -1) break
+        const frame = buffer.slice(0, end)
+        buffer = buffer.slice(end + 2)
+        const event = parseFrame(frame)
+        if (event) yield event
+      }
+    }
+  } finally {
+    // Reached when the caller stops consuming (an abort, or a `break` in their
+    // loop). Releases the connection so the server learns nobody is listening
+    // and stops generating.
+    await reader.cancel().catch(() => {})
+  }
+}
+
+/** One SSE message -> a typed event, or null for anything we do not handle. */
+function parseFrame(frame: string): ChatEvent | null {
+  let name = 'message'
+  const data: string[] = []
+
+  for (const line of frame.split('\n')) {
+    // Lines starting with ':' are comments. The server sends one immediately so
+    // the headers arrive before the first real event.
+    if (!line || line.startsWith(':')) continue
+    if (line.startsWith('event:')) name = line.slice(6).trim()
+    else if (line.startsWith('data:')) data.push(line.slice(5).trim())
+  }
+
+  if (data.length === 0) return null
+
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(data.join('\n')) as Record<string, unknown>
+  } catch {
+    return null
+  }
+
+  switch (name) {
+    case 'stage':
+      return { type: 'stage', label: String(payload.label ?? '') }
+    case 'token':
+      return { type: 'token', text: String(payload.text ?? '') }
+    case 'source':
+      return { type: 'source', source: payload as unknown as StreamedSource }
+    case 'done':
+      return { type: 'done', result: payload as unknown as Omit<ChatResponse, 'sources'> }
+    case 'error':
+      return { type: 'error', detail: String(payload.detail ?? 'Something went wrong.') }
+    default:
+      return null
+  }
 }

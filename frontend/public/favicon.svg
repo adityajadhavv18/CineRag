@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <rect width="32" height="32" rx="6" fill="#0b0b0f" />
-  <path d="M11 8v16M21 8v16" stroke="#e50914" stroke-width="3" stroke-linecap="round" />
-  <circle cx="16" cy="16" r="3.5" fill="#e50914" />
+  <!-- The N as three strokes: two uprights and the diagonal between them, which
+       is how the mark reads at 16px where a filled glyph turns to mush. -->
+  <path d="M9 5h4.6l5.4 13.4V5H23v22h-4.6L13 13.6V27H9z" fill="#e50914" />
 </svg>

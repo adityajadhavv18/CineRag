@@ -13,6 +13,19 @@ That guarantee is why the questions are TEMPLATED rather than written by an LLM.
 A prompt saying "only use these options" is guidance; building the sentence from
 the query result is a guarantee. The cost is slightly stiffer prose, and no
 tokens or latency — the same trade-off off_topic_node makes.
+
+TWO RENDERINGS OF ONE QUESTION SET. `response` is the prose, unchanged: it is
+what the CLI prints, what the eval reads, and what goes back into history as the
+agent's own words. `clarification` is the same questions before they were
+flattened — options still separate, still carrying their counts — so a UI can
+offer them as choices instead of asking someone to type "1990s" back at us.
+Nothing new is computed for it; the prose was always built from this.
+
+Each question carries the PHRASING for its own answer (`phrase` + `slot`), so
+composing the picks back into a query stays here, next to the counts that make
+the options real, rather than being reinvented by every client that renders them.
+The ungrounded fallback deliberately emits no payload: there are no counted
+options, so there must be no options UI.
 """
 
 from __future__ import annotations
@@ -33,6 +46,16 @@ def _fmt(options: list[dict], label_fn=str) -> str:
     return "  ".join(f"• {label_fn(o['option'])} ({o['films']})" for o in options)
 
 
+def _options(options: list[dict], label_fn=str) -> list[dict]:
+    """The same options `_fmt` renders, kept apart instead of joined.
+
+    The count travels with each one: it is what proves the option was counted
+    out of the graph rather than imagined, and it is genuinely useful to see
+    before choosing ("Thriller 212" against "Music 18").
+    """
+    return [{"label": label_fn(o["option"]), "films": o["films"]} for o in options]
+
+
 def clarification_node(state: AgentState) -> dict:
     filters = state.get("filters") or {}
     entities = state.get("entities") or {}
@@ -48,20 +71,54 @@ def clarification_node(state: AgentState) -> dict:
     total = probe.get("total") or 0
 
     questions: list[str] = []
+    asked: list[dict] = []
+
+    def ask(prompt: str, note: str | None, options: list[dict], *, slot: str, phrase: str,
+            id: str, label_fn=str) -> None:
+        """Record one question in both renderings, from one set of options."""
+        stem = f"{prompt} {note}:" if note else prompt
+        questions.append(f"{stem}\n   {_fmt(options, label_fn)}")
+        asked.append({
+            "id": id,
+            "prompt": prompt,
+            "note": note,
+            # Where this answer belongs in the sentence the picks compose into,
+            # and how it reads there. "Thriller" goes in front of the subject as
+            # an adjective; an era or a name follows it as a clause.
+            "slot": slot,
+            "phrase": phrase,
+            "options": _options(options, label_fn),
+        })
+
     if pairings:
-        stem = (
-            f"What flavour of {subject}? These pair most often in my catalogue:"
-            if seed_genres
-            else "What sort of thing are you in the mood for? My biggest categories:"
+        ask(
+            f"What flavour of {subject}?" if seed_genres
+            else "What sort of thing are you in the mood for?",
+            "These pair most often in my catalogue" if seed_genres
+            else "My biggest categories",
+            pairings[:4],
+            slot="before",
+            phrase="{value}",
+            id="flavour",
         )
-        questions.append(f"{stem}\n   {_fmt(pairings[:4])}")
     if decades:
-        questions.append(
-            "Any particular era?\n   " + _fmt(decades[:4], lambda d: f"{d}s")
+        ask(
+            "Any particular era?",
+            None,
+            decades[:4],
+            slot="after",
+            phrase="from the {value}",
+            id="era",
+            label_fn=lambda d: f"{d}s",
         )
     if people and seed_genres:
-        questions.append(
-            "Anyone you'd like to see in it? Most prolific here:\n   " + _fmt(people[:4])
+        ask(
+            "Anyone you'd like to see in it?",
+            "Most prolific here",
+            people[:4],
+            slot="after",
+            phrase="starring {value}",
+            id="cast",
         )
 
     if not questions:
@@ -84,6 +141,15 @@ def clarification_node(state: AgentState) -> dict:
     body = "\n\n".join(f"{i}. {q}" for i, q in enumerate(questions[:MAX_QUESTIONS], start=1))
     response = f"{lead}\n\n{body}\n\nAnswer any of these and I'll take it from there."
 
+    # `subject` is the noun the picks are composed around ("crime films"), so a
+    # client can build "Thriller crime films from the 1990s" without knowing
+    # what was asked or in which order.
+    clarification = {
+        "lead": lead,
+        "subject": subject,
+        "questions": asked[:MAX_QUESTIONS],
+    }
+
     log.info(
         "clarification_asked",
         seed_genres=seed_genres,
@@ -92,4 +158,9 @@ def clarification_node(state: AgentState) -> dict:
         # Proof the options were grounded, visible in the trace.
         options_offered=[o["option"] for o in pairings[:4]],
     )
-    return {"response": response, "citations": [], "trace": [f"clarification({len(questions)}q)"]}
+    return {
+        "response": response,
+        "citations": [],
+        "clarification": clarification,
+        "trace": [f"clarification({len(questions)}q)"],
+    }

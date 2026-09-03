@@ -73,12 +73,57 @@ class FranchiseTimeline(BaseModel):
     films: list[FranchiseFilm] = Field(default_factory=list)
 
 
+class ClarifyOption(BaseModel):
+    """One narrowing choice. `films` is how many films sit behind it — counted
+    out of the graph, never estimated, which is the whole point of contract
+    §2.3: an option nothing can satisfy makes asking worse than not asking."""
+
+    label: str
+    films: int
+
+
+class ClarifyQuestion(BaseModel):
+    prompt: str
+    # Where the counts came from ("These pair most often in my catalogue"), when
+    # that is worth saying. Not every question has one.
+    note: str | None = None
+    options: list[ClarifyOption] = Field(default_factory=list)
+
+    # How a chosen option reads once composed back into a query. `phrase` holds
+    # a single `{value}` placeholder; `slot` says whether the filled phrase goes
+    # before the subject ("Thriller crime films") or after it ("from the 1990s").
+    # Server-side because the wording belongs with the counts, not in whichever
+    # client happens to be rendering them.
+    slot: Literal["before", "after"] = "after"
+    phrase: str = "{value}"
+    id: str
+
+
+class Clarification(BaseModel):
+    """`response` as data.
+
+    The prose in `response` says the same thing and remains authoritative — it
+    is what goes into history as the agent's own words. This is for a client
+    that would rather offer the options than ask someone to type one back.
+    """
+
+    lead: str
+    # The noun the answers are composed around: "crime films", or just "films".
+    subject: str
+    questions: list[ClarifyQuestion] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     response: str
     intent: str | None = None
     lead_engine: str | None = None
     sources: list[Source] = Field(default_factory=list)
     franchise: list[FranchiseTimeline] = Field(default_factory=list)
+
+    # Present only when the agent asked grounded narrowing questions. Null on
+    # every other intent, and null on clarification's ungrounded fallback, where
+    # the honest open question in `response` is all there is to show.
+    clarification: Clarification | None = None
 
     # True when a store was unreachable, so the client can show a "some data was
     # unavailable" notice instead of treating a thin answer as a complete one.

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import time
 import warnings
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 
 from openai import OpenAI, APIError, RateLimitError
@@ -105,13 +108,65 @@ def embed_query(text: str) -> list[float]:
     return embed_texts([text])[0]
 
 
+# ── token streaming (Day 8) ───────────────────────────────────────────────────
+#
+# A sink is a function that receives each token as it arrives. It lives in a
+# ContextVar rather than being threaded through every node signature, because the
+# node that generates the answer sits three layers inside LangGraph and has no
+# business knowing whether an HTTP caller happens to want tokens live.
+#
+# Nothing is set by default, so `chat()` behaves exactly as it always has for the
+# CLI, the eval harness and the tests. Streaming is opt-in, from the edge.
+#
+# ContextVars do NOT propagate into a `threading.Thread` — whoever runs the graph
+# on a worker thread must enter `token_sink()` inside that thread.
+TokenSink = Callable[[str], None]
+
+_TOKEN_SINK: ContextVar[TokenSink | None] = ContextVar("token_sink", default=None)
+
+
+@contextmanager
+def token_sink(on_token: TokenSink) -> Iterator[None]:
+    """Route every `chat()` token to `on_token` for the duration of the block."""
+    reset = _TOKEN_SINK.set(on_token)
+    try:
+        yield
+    finally:
+        _TOKEN_SINK.reset(reset)
+
+
 def chat(messages: list[dict], **kwargs) -> str:
-    """Single-turn chat completion returning the message text. Used from Day 3."""
+    """Single-turn chat completion returning the message text. Used from Day 3.
+
+    Returns the complete text either way. That is the point of doing it here: a
+    caller streaming tokens still gets the whole string back, so everything built
+    on top of it — validate_citations above all — is untouched by streaming.
+    """
     client = get_client()
-    resp = client.chat.completions.create(
-        model=settings.chat_model, messages=messages, **kwargs
+    sink = _TOKEN_SINK.get()
+
+    if sink is None:
+        resp = client.chat.completions.create(
+            model=settings.chat_model, messages=messages, **kwargs
+        )
+        return resp.choices[0].message.content or ""
+
+    parts: list[str] = []
+    stream = client.chat.completions.create(
+        model=settings.chat_model, messages=messages, stream=True, **kwargs
     )
-    return resp.choices[0].message.content or ""
+    for chunk in stream:
+        # A chunk can carry no choices at all (the usage-only frame that closes a
+        # stream), and a choice can carry a delta with no content (the first frame
+        # announces the role). Both are normal; neither is a token.
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            parts.append(delta)
+            sink(delta)
+
+    return "".join(parts)
 
 
 # Day 3 hook: LangSmith tracing is enabled by setting LANGCHAIN_TRACING_V2=true

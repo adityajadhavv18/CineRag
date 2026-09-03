@@ -64,6 +64,33 @@ def test_clarification_asks_at_most_three_questions():
 
 
 @needs_stores
+def test_the_clickable_options_carry_the_same_guarantee_as_the_prose():
+    """The two renderings must not drift.
+
+    A UI renders `clarification`, never `response` — so the Day 6 rule has to
+    hold on the payload too, or the guarantee only covers the copy nobody reads.
+    Every label must also appear in the prose, which is what proves both were
+    built from one set of counted options rather than assembled twice.
+    """
+    out = clarification_node({"query": "recommend some action movies",
+                              "filters": {"genres": ["Action"]}, "entities": {}})
+    payload = out["clarification"]
+
+    assert payload["questions"]
+    assert len(payload["questions"]) <= MAX_QUESTIONS
+
+    for question in payload["questions"]:
+        assert question["options"], "a question with nothing to pick is not a question"
+        # The client composes the picks into a query using these two fields.
+        assert "{value}" in question["phrase"]
+        assert question["slot"] in ("before", "after")
+
+        for option in question["options"]:
+            assert option["films"] >= MIN_FILMS_PER_OPTION
+            assert option["label"] in out["response"]
+
+
+@needs_stores
 def test_clarification_never_retrieves():
     """It is a question, not an answer — no films may be cited."""
     out = clarification_node({"query": "recommend some movies", "filters": {}, "entities": {}})
@@ -81,6 +108,9 @@ def test_clarification_degrades_when_the_probe_is_empty():
     assert out["response"]
     assert out["citations"] == []
     assert "ungrounded" in out["trace"][0]
+    # And nothing to click. Options come from counts; with no counts there are
+    # no options, so the honest open question in `response` is all there is.
+    assert out.get("clarification") is None
 
 
 # ── franchise timeline ───────────────────────────────────────────────────────

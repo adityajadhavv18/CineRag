@@ -75,6 +75,13 @@ class AgentState(TypedDict, total=False):
     response: str
     franchise: list[dict]
 
+    # The narrowing questions, still structured, when clarification_node asked
+    # any. `response` already contains them as prose; this is the same set with
+    # its options intact so a client can offer them as choices. Absent on every
+    # other path, and absent even on clarification's ungrounded fallback — where
+    # there are no counted options, there must be no options to click.
+    clarification: dict[str, Any]
+
     # ── observability (guideline C) ──────────────────────────────────────────
     # Appended to by every node, so one run carries its own decision trail.
     trace: Annotated[list[str], operator.add]
